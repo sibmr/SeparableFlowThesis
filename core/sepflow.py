@@ -201,20 +201,36 @@ class SepFlow(nn.Module):
 
         hdim = self.hidden_dim
         cdim = self.context_dim
+        
+        # calculate per-eighth-pixel features
         fmap1 = self.fnet(image1)
         fmap2 = self.fnet(image2)
         
+        # cast to float
         fmap1 = fmap1.float()
         fmap2 = fmap2.float()
+
+        # TODO: what is guidance?
         guid, guid_u, guid_v = self.guidance(fmap1.detach(), image1)
+        
+        # correlation now seems to use guidance
         corr_fn = CorrBlock(fmap1, fmap2, guid, radius=self.args.corr_radius)
 
+        # context features calculation:
+        # hidden state initialization + context features
         cnet = self.cnet(image1)
         net, inp = torch.split(cnet, [hdim, cdim], dim=1)
         net = torch.tanh(net)
         inp = torch.relu(inp)
+        
+        # calculated C_u and C_v with shape (batch, |U|, ht, wd) / (batch, |V|, ht, wd)
         corr1, corr2 = corr_fn(None, sep=True)
+        
+        # initializing the flow (like raft, zero-flow)
+        # coords1 - coords0 = flow = zeros
         coords0, coords1 = self.initialize_flow(image1)
+
+        # cost aggregation reduces corr1 and corr2 from (batch, K, ht, wd) to (batch, 1, ht, wd)
         if self.training:
             u0, u1, flow_u, corr1 = self.cost_agg1(corr1, guid_u, max_shift=384, is_ux=True)
             v0, v1, flow_v, corr2 = self.cost_agg2(corr2, guid_v, max_shift=384, is_ux=False)
@@ -229,13 +245,24 @@ class SepFlow(nn.Module):
             flow_u, corr1 = self.cost_agg1(corr1, guid_u, max_shift=384, is_ux=True)
             flow_v, corr2 = self.cost_agg2(corr2, guid_v, max_shift=384, is_ux=False)
             flow_init = torch.cat((flow_u, flow_v), dim=1)
+        
+        # downsample inital flow
         flow_init = F.interpolate(flow_init.detach()/8.0, [cnet.shape[2], cnet.shape[3]], mode='bilinear', align_corners=True)
+        
+        # create 1d correlation block from C^A_u and C^A_v
         corr1d_fn = CorrBlock1D(corr1, corr2, radius=self.args.corr_radius)
+        
+        # update coords1 with inital flow estimate
         coords1 = coords1 + flow_init
+        
+        # iterative optimization
         for itr in range(iters):
             coords1 = coords1.detach()
             
+            # index 4d correlation volume
             corr = corr_fn(coords1) # index correlation volume
+            
+            # index the two 3d correlation volumes
             corr1, corr2 = corr1d_fn(coords1) # index correlation volume
             flow = coords1 - coords0
             with autocast(enabled=self.args.mixed_precision):

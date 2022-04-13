@@ -9,6 +9,8 @@ try:
 except:
     # alt_cuda_corr is not compiled
     pass
+
+
 class NLF(nn.Module):
 
     def __init__(self, in_channel=32):
@@ -102,17 +104,35 @@ class CorrBlock:
     #@staticmethod
     def corr_compute(self, fmap1, fmap2, guid, reverse=True):
         batch, dim, ht, wd = fmap1.shape
+        
+        # flatten height/width dimension
         fmap1 = fmap1.view(batch, dim, ht*wd)
         fmap2 = fmap2.view(batch, dim, ht*wd) 
         
+        # reverse has matmul(fmap2, fmap1) instead of matmul(fmap1, fmap2)
         if reverse:
+            
+            # see non-reverse branch
             corr = torch.matmul(fmap2.transpose(1,2), fmap1) / torch.sqrt(torch.tensor(dim).float())
             corr = corr.view(batch, ht, wd, ht, wd)
             corr = self.nlf(corr, guid)
+            
+            # swapping the fmap1 height/width dimensions back to the front:
+            # (batch, ht_fmap2, wd_fmap2, ht_fmap1, wd_fmap1) 
+            # -> (batch, ht_fmap1, wd_fmap1, ht_fmap2, wd_fmap2)
             corr = corr.permute(0, 3, 4, 1, 2)
+
+        # non-reverse has matmul(fmap1, fmap2) as in raft
         else:
+            # standart 4d correlation volume computation from raft
+            # matmul: (batch, ht*wd, feature_dim) (batch, feature_dim, ht*wd) -> (batch, ht*wd, ht*wd)
             corr = torch.matmul(fmap1.transpose(1,2), fmap2) / torch.sqrt(torch.tensor(dim).float())
+            
+            # reshape to separate height/width dimensions
             corr = corr.view(batch, ht, wd, ht, wd)
+            
+            # nlf seems to somehow combine the 4d correlation volume with guidance 
+            # guidance is a combination of fmap1 and img1
             corr = self.nlf(corr, guid)
 
         return corr
