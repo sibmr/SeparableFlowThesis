@@ -194,15 +194,29 @@ class NLFMean(Module):
 #        result3 = NlfLeftFunction()(input, g3)
 #        return torch.add(torch.add(torch.add(result0, result1), result2), result3)
         return (result0 + result1 + result2 + result3) * 0.25
+
 class NLFIter(Module):
     def __init__(self):
         super(NLFIter, self).__init__()
     def forward(self, input, g0, g1, g2, g3):
+        """ Aggregate input iteratively/sequentially in down, up, right, left direction
+
+        Args:
+            input (torch.Tensor): input of shape (batch, D1*D2, H, W) where D1 = H, D2 = W
+            g0 (torch.Tensor): guidance for down direction, shape (batch, 5, ht, wd)
+            g1 (torch.Tensor): guidance for up direction
+            g2 (torch.Tensor): guidance for right direction
+            g3 (torch.Tensor): guidance for left direction
+
+        Returns:
+            torch.Tensor: semi-globally aggregated input
+        """
         result = NlfDownFunction.apply(input, g0)
         result = NlfUpFunction.apply(result, g1)
         result = NlfRightFunction.apply(result, g2)
         result = NlfLeftFunction.apply(result, g3)
         return result
+
 class NLF(Module):
     def __init__(self):
         super(NLF, self).__init__()
@@ -210,6 +224,7 @@ class NLF(Module):
     def forward(self, input, g0, g1, g2, g3):
         result = NlfFunction.apply(input, g0, g1, g2, g3)
         return result
+
 class SGA(Module):
     def __init__(self):
         super(SGA, self).__init__()
@@ -217,8 +232,6 @@ class SGA(Module):
     def forward(self, input, g0, g1, g2, g3):
         result = SgaFunction.apply(input, g0, g1, g2, g3)
         return result
-		
-
 		
 class LGA3D3(Module):
     def __init__(self, radius=2):

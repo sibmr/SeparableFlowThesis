@@ -16,20 +16,39 @@ class NLF(nn.Module):
     def __init__(self, in_channel=32):
         super(NLF, self).__init__()
         self.nlf = NLFIter()
+    
     def forward(self, x, g):
+        """ 4 directional aggregation of 4d correlation volume
+            TODO: what does nlf stand for?
+
+        Args:
+            x (torch.Tensor): input tensor (4d correlation volume)
+            g (torch.Tensor): guidance for 4d correlation volume
+        """
         N, D1, D2, H, W = x.shape
+
+        # merge pixel height/width
         x = x.reshape(N, D1*D2, H, W).contiguous()
         rem = x
+        
+        # split guidance for each direction: down, up, right, left
         k1, k2, k3, k4 = torch.split(g, (5, 5, 5, 5), 1)
+
 #        k1, k2, k3, k4 = self.getweights(x)
+        
+        # L1 normalize the guidance for each direction
         k1 = F.normalize(k1, p=1, dim=1)
         k2 = F.normalize(k2, p=1, dim=1)
         k3 = F.normalize(k3, p=1, dim=1)
         k4 = F.normalize(k4, p=1, dim=1)
 
+        # apply nlf to 4d cost volume
         x = self.nlf(x, k1, k2, k3, k4)
 #        x = x + rem
+
+        # reshape to separate pixel channels
         x = x.reshape(N, D1, D2, H, W)
+        
         return x
         
 
@@ -54,6 +73,7 @@ class CorrBlock:
         for i in range(self.num_levels-1):
             corr = F.avg_pool2d(corr, 2, stride=2)
             self.corr_pyramid.append(corr)
+    
     def separate(self):
         sep_u = []
         sep_v = []
@@ -133,6 +153,8 @@ class CorrBlock:
             
             # nlf seems to somehow combine the 4d correlation volume with guidance 
             # guidance is a combination of fmap1 and img1
+            # nlf has an up, down, left and right component
+            # shape: (batch, ht, wd, ht, wd)
             corr = self.nlf(corr, guid)
 
         return corr

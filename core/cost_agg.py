@@ -283,10 +283,14 @@ class CostAggregation(nn.Module):
         x = self.deconv2b(x, rem1)
         x = self.deconv1b(x, rem0)
         x = self.sga3(x, g['sg3'])
+        
         shift2 = self.shift2(x, max_shift)
+        
         if self.training:
+            #      u0      u1      flow_u  (C^A_u OR C^A_v)
             return shift0, shift1, shift2, corr
         else:
+            #      flow_u  (C^A_u OR C^A_v)
             return shift2, corr
 
 class Corr2Cost(nn.Module):
