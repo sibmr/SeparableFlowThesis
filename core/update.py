@@ -136,7 +136,12 @@ class BasicUpdateBlock(nn.Module):
             nn.Conv2d(256, 64*9, 1, padding=0))
 
     def forward(self, net, inp, corr, corr1, corr2, flow, upsample=True):
+        
+        # motion features include flow and a 4d and 3d motion representation
+        # compared to raft, includes additional corr1 and corr2 volume
         motion_features = self.encoder(flow, corr, corr1, corr2)
+        
+        # same combining context and motion features, same as raft
         inp = torch.cat([inp, motion_features], dim=1)
 
         net = self.gru(net, inp)
