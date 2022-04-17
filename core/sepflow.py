@@ -293,6 +293,7 @@ class SepFlow(nn.Module):
         guid, guid_u, guid_v = self.guidance(fmap1.detach(), image1)
         
         # correlation now seems to use guidance
+        # corr_fn used for both 4d and 3d cost volume computation
         corr_fn = CorrBlock(fmap1, fmap2, guid, radius=self.args.corr_radius)
 
         # context features calculation:
@@ -338,7 +339,7 @@ class SepFlow(nn.Module):
         for itr in range(iters):
             coords1 = coords1.detach()
             
-            # index 4d correlation volume
+            # index 4d correlation volume -> multi-scale correlation features
             corr = corr_fn(coords1) # index correlation volume
             
             # index the two 3d correlation volumes

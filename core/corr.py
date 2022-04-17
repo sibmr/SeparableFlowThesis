@@ -75,30 +75,91 @@ class CorrBlock:
             self.corr_pyramid.append(corr)
     
     def separate(self):
+        """ create two separate correlation volumes 
+            in this version, they only consist of the max and avg
+            -> no use of self-adaptive compression, because only attention in vector
+            -> no additional fields aggregated through attention
+
+            they are interpolated on every level to have the original ht/wd dimension
+
+            shape: 
+                sep_u: (batch, 2*levels, wd, ht, wd)
+                sep_v: (batch, 2*levels, ht, ht, wd)
+
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor]: 
+        """
         sep_u = []
         sep_v = []
+
+        # for each level of 4d correlation volume pyramid
         for i in range(self.num_levels):
+            # correlation volume at level i
+            # shape: (batch*ht*wd, 1, ht/2**i, wd/2**i)
             corr = self.corr_pyramid[i]
+            
+            # max values of correlation volume
+            # shape: (batch*ht*wd, 1, 1, wd/2**i)
             m1, _ = corr.max(dim=2, keepdim=True)
+            
+            # avg values of correlation volume
+            # shape: (batch*ht*wd, 1, 1, wd/2**i)
             m2 = corr.mean(dim=2, keepdim=True)
+            
+            # this is the attention vector from the paper
+            # sep only contains max and avg, no additional attention-based fields like in paper
+            # (batch*ht*wd, 1, 1, wd/2**i) (batch*ht*wd, 1, 1, wd/2**i) -> (batch*ht*wd, 1, 2, wd/2**i)
             sep = torch.cat((m1, m2), dim=2)
+            
+            # reshape: (batch*ht*wd, 1, 2, wd/2**i)     -> (batch, ht, wd, 2, wd/2**i)
+            # permute: (batch, ht, wd, 2, wd/2**i)   -> (batch, 2, wd/2**i, ht, wd)
             sep = sep.reshape(self.shape[0], self.shape[1], self.shape[2], sep.shape[2], sep.shape[3]).permute(0, 3, 4, 1, 2)
+            
+            # TODO: why upsample from reduced level resolution?
+            # maybe they used the largest-level correlation volume to pair the attention with
+            # also, upsampling is the only way the concatenation at the end is possible (otherwise, shape[2] would not match)
+            # (batch, 2, wd/2**i, ht, wd) -> (batch, 2, wd, ht, wd)
             sep = F.interpolate(sep, [self.shape[4], self.shape[1], self.shape[2]], mode='trilinear', align_corners=True)
+            
             sep_u.append(sep)
+            
+            # exactly the same for the width dimension
+            # (batch*ht*wd, 1, ht/2**i, 1)
             m1, _ = corr.max(dim=3, keepdim=True)
+            # (batch*ht*wd, 1, ht/2**i, 1)
             m2 = corr.mean(dim=3, keepdim=True)
+            # (batch*ht*wd, 1, ht/2**i, 2)
             sep = torch.cat((m1, m2), dim=3)
+            # (batch, 2, ht/2**i, ht, wd)
             sep = sep.reshape(self.shape[0], self.shape[1], self.shape[2], sep.shape[2], sep.shape[3]).permute(0, 4, 3, 1, 2)
+            # (batch, 2, ht, ht, wd)
             sep = F.interpolate(sep, [self.shape[3], self.shape[1], self.shape[2]], mode='trilinear', align_corners=True)
+            
             sep_v.append(sep)
+        
+        # concatenate over all levels
+        # liste -> (batch, 2*levels, wd, ht, wd)
         sep_u = torch.cat(sep_u, dim=1)
+        # liste -> (batch, 2*levels, ht, ht, wd)
         sep_v = torch.cat(sep_v, dim=1)
+        
         return sep_u, sep_v
 
 
     def __call__(self, coords, sep=False):
+        
+        # returns two 3d cost volumes
+        # sep_u: (batch, ht, wd, ht), sep_v: (batch, ht, wd, wd)
+        # very strange behaviour:
+        #   if sep==False:
+        #       return indexed 4d correlation volume
+        #   if sep==True:
+        #       return two NOT indexed 3d correlation volumes
+        #       they need to be indexed in CorrBlock1D still
         if sep:
             return self.separate()
+        
+        # this part is the same as RAFT
         r = self.radius
         coords = coords.permute(0, 2, 3, 1)
         batch, h1, w1, _ = coords.shape
@@ -119,6 +180,10 @@ class CorrBlock:
             out_pyramid.append(corr)
 
         out = torch.cat(out_pyramid, dim=-1)
+
+        # permutation:
+        # (batch, h1, w1, num_levels*dim*(2*r+1)*(2*r+1)) -> (batch, num_levels*dim*(2*r+1)*(2*r+1), h1, w1)
+        # also contiguous is used to copy the tensor with new memory layout according to shape
         return out.permute(0, 3, 1, 2).contiguous().float()
 
     #@staticmethod
@@ -191,7 +256,17 @@ class AlternateCorrBlock:
         return corr / torch.sqrt(torch.tensor(dim).float())
 
 class CorrBlock1D:
+
     def __init__(self, corr1, corr2, num_levels=4, radius=4):
+        """ responsible for indexing the 3d correlation volumes for u and v
+
+
+        Args:
+            corr1 (torch.Tensor): _description_
+            corr2 (_type_): _description_
+            num_levels (int, optional): _description_. Defaults to 4.
+            radius (int, optional): _description_. Defaults to 4.
+        """
         self.num_levels = num_levels
         self.radius = radius
         self.corr_pyramid1 = []
