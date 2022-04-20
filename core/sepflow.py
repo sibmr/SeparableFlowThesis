@@ -140,6 +140,11 @@ class Guidance(nn.Module):
 
         Returns:
             Tuple[torch.Tensor, dict, dict]: guidance for 4d/3d correlation volume calculation
+                the Tensor is used for correlation volume aggregation
+                the dictionaries are used for C_u, C_v 3d correlation volume aggregation
+                dictionaries contain keys sg1,sg2,sg3,sg11,sg12 for the 5 different aggregation steps
+                each one-eighth-pixel has 20 weights that are split as follows:
+                    4 directions, with 5 weights each for aggregation
         """
         
         # reduce img resolution from full to 1/8, adding channels
@@ -290,6 +295,7 @@ class SepFlow(nn.Module):
 
         # guidance is part of the Semi-Global-Aggregation Layer
         # returns 3 dictionaries for guidance of aggregation of 4d-uv, 3d-u and 3d-v correlation volume
+        # guidance: 4 directions, with 5 weights each (summing to 1)
         guid, guid_u, guid_v = self.guidance(fmap1.detach(), image1)
         
         # correlation now seems to use guidance
@@ -303,7 +309,10 @@ class SepFlow(nn.Module):
         net = torch.tanh(net)
         inp = torch.relu(inp)
         
-        # calculated C_u and C_v with shape (batch, |U|, ht, wd) / (batch, |V|, ht, wd)
+        # calculated C_u and C_v
+        # They consist of the max and avg of the u column/ v row
+        # C_u: (batch, 2*levels, wd, ht, wd)
+        # C_v: (batch, 2*levels, ht, ht, wd)
         corr1, corr2 = corr_fn(None, sep=True)
         
         # initializing the flow (like raft, zero-flow)
@@ -312,8 +321,12 @@ class SepFlow(nn.Module):
 
         # cost aggregation reduces corr1 and corr2 from (batch, K, ht, wd) to (batch, 1, ht, wd)
         if self.training:
+            # is_ux = True identifies corr1 as C_u
             u0, u1, flow_u, corr1 = self.cost_agg1(corr1, guid_u, max_shift=384, is_ux=True)
+            # is_ux = False identifies corr2 as C_v
             v0, v1, flow_v, corr2 = self.cost_agg2(corr2, guid_v, max_shift=384, is_ux=False)
+            
+            # motion-regressed inital flow
             flow_init = torch.cat((flow_u, flow_v), dim=1)
             
             flow_predictions = []
