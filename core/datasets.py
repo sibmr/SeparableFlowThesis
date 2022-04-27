@@ -120,7 +120,7 @@ class FlowDataset(data.Dataset):
         
 
 class MpiSintel(FlowDataset):
-    def __init__(self, aug_params=None, split='training', root='/export/work/feihu/flow/Sintel', dstype='clean'):
+    def __init__(self, aug_params=None, split='training', root='/data/azin/sintel', dstype='clean'):
         super(MpiSintel, self).__init__(aug_params)
         flow_root = osp.join(root, split, 'flow')
         image_root = osp.join(root, split, dstype)
@@ -139,7 +139,7 @@ class MpiSintel(FlowDataset):
 
 
 class FlyingChairs(FlowDataset):
-    def __init__(self, aug_params=None, split='train', root='/export/work/feihu/flow/FlyingChairs_release/data'):
+    def __init__(self, aug_params=None, split='train', root='/data/azin/fc/data'):
         super(FlyingChairs, self).__init__(aug_params)
 
         images = sorted(glob(osp.join(root, '*.ppm')))
@@ -155,7 +155,7 @@ class FlyingChairs(FlowDataset):
 
 
 class FlyingThings3D(FlowDataset):
-    def __init__(self, aug_params=None, root='/export/work/feihu/flow/SceneFlow', dstype='frames_cleanpass'):
+    def __init__(self, aug_params=None, root='/data/azin/fth', dstype='frames_cleanpass'):
         super(FlyingThings3D, self).__init__(aug_params)
 
         for cam in ['left']:
@@ -179,7 +179,7 @@ class FlyingThings3D(FlowDataset):
       
 
 class KITTI(FlowDataset):
-    def __init__(self, aug_params=None, split='training', root='/export/work/feihu/KITTI'):
+    def __init__(self, aug_params=None, split='training', root='/data/azin/kitti15/dataset'):
         super(KITTI, self).__init__(aug_params, sparse=True)
         if split == 'testing':
             self.is_test = True
@@ -241,7 +241,7 @@ class VKITTI(FlowDataset):
                                 self.flow_list += [ flows[i] ]
 
 class HD1K(FlowDataset):
-    def __init__(self, aug_params=None, root='/export/work/feihu/flow/HD1K'):
+    def __init__(self, aug_params=None, root='/data/azin/HD1k'):
         super(HD1K, self).__init__(aug_params, sparse=True)
 
         seq_ix = 0
@@ -290,7 +290,7 @@ def fetch_dataloader(args, TRAIN_DS='C+T+K+S+H'):
         sintel_final = MpiSintel(aug_params, split='training', dstype='final')        
 
         if TRAIN_DS == 'C+T+K+S+H':
-            kitti = KITTI({'crop_size': args.image_size, 'min_scale': -0.3, 'max_scale': 0.5, 'do_flip': True}, root="/export/work/feihu/kitti2015")
+            kitti = KITTI({'crop_size': args.image_size, 'min_scale': -0.3, 'max_scale': 0.5, 'do_flip': True}, root="/data/azin/kitti15/dataset")
             hd1k = HD1K({'crop_size': args.image_size, 'min_scale': -0.5, 'max_scale': 0.2, 'do_flip': True})
             train_dataset = 100*sintel_clean + 100*sintel_final + 200*kitti + 5*hd1k + things
 
@@ -306,7 +306,7 @@ def fetch_dataloader(args, TRAIN_DS='C+T+K+S+H'):
 
     elif args.stage == 'kitti':
         aug_params = {'crop_size': args.image_size, 'min_scale': -0.2, 'max_scale': 0.4, 'do_flip': False}
-        train_dataset = 200 * KITTI(aug_params, split='training', root="/export/work/feihu/kitti2015")
+        train_dataset = 200 * KITTI(aug_params, split='training', root="/data/azin/kitti15/dataset")
     elif args.stage == 'kitti2012':
         aug_params = {'crop_size': args.image_size, 'min_scale': -0.2, 'max_scale': 0.4, 'do_flip': False}
         train_dataset = 200 * KITTI2012(aug_params, split='training', root="/export/work/feihu/kitti2012")

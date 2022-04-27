@@ -209,7 +209,7 @@ class NLFIter(Module):
             g3 (torch.Tensor): guidance for left direction
 
         Returns:
-            torch.Tensor: semi-globally aggregated input
+            torch.Tensor: input with nlf applied
         """
         result = NlfDownFunction.apply(input, g0)
         result = NlfUpFunction.apply(result, g1)
