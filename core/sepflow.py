@@ -329,6 +329,8 @@ class SepFlow(nn.Module):
             # motion-regressed inital flow
             flow_init = torch.cat((flow_u, flow_v), dim=1)
             
+            # add all three parts of the motion regression of the initial flow
+            # to the list for calculating the flow error loss
             flow_predictions = []
             flow_predictions.append(torch.cat((u0, v0), dim=1))
             flow_predictions.append(torch.cat((u1, v1), dim=1))
@@ -379,6 +381,7 @@ class SepFlow(nn.Module):
                 flow_predictions.append(flow_up)
 
         if self.training:
+            # shape: (batch, 2, HT, WD)
             return flow_predictions
         else:
             return coords1 - coords0, flow_up

@@ -86,29 +86,51 @@ SUM_FREQ = 100
 VAL_FREQ = 2500
 
 def sequence_loss(flow_preds, flow_gt, valid, gamma=0.8, max_flow=MAX_FLOW):
-    """ Loss function defined over sequence of flow predictions """
+    """ Loss function defined over sequence of flow predictions
+
+    Args:
+        flow_preds (list): list of flow predictions of shape (batch, 2, HT, WD)
+        flow_gt (torch.Tensor): ground truth flow image of shape (batch, 2, HT, WD)
+        valid (torch.Tensor):  whether flow_gt is valid at each pixel of shape (batch, HT, WD)
+        gamma (float, optional): weight decay factor for flow refinement. Defaults to 0.8.
+        max_flow (float, optional): threshold value for maximum flow value. Defaults to MAX_FLOW.
+
+    Returns:
+        Tuple[torch.Tensor,dict]: scalar tensor loss, flow quality metrics
+    """
 
     n_predictions = len(flow_preds)    
     flow_loss = 0.0
 
+    # set pixels where flow magnitude is too large as invalid
     mag = torch.sum(flow_gt**2, dim=1).sqrt()
     valid = (valid >= 0.5) & (mag < max_flow)
 
+    # in raft: weights[i] = gamma**(n_predictions-i), where i is the iteration of refinement
+    # in this case: iteration 0,1 and 2 belong to inital flow regression
+    #               refinement iterations start at 3
+    #                       regression      refinement      
+    # weights for n_img_refinement = 4:
+    #   [0.1, 0.3, 0.5, 0.6024, 0.7304, 0.8904, 1.0903999999999998]
     weights = [0.1, 0.3, 0.5]
     base = weights[2] - gamma ** (n_predictions - 3)
     for i in range(n_predictions - 3):
         weights.append( base + gamma**(n_predictions - i - 4) )
 
+    # loss based on weights array
     for i in range(n_predictions):
         i_loss = (flow_preds[i] - flow_gt).abs()
         flow_loss += weights[i] * (valid[:, None] * i_loss).mean()
 
+    # end point error calculation for the final flow output
     epe = torch.sum((flow_preds[-1] - flow_gt)**2, dim=1).sqrt()
     epe = epe.view(-1)[valid.view(-1)]
     loss_value = flow_loss.detach()
     rate0 = (epe > 1).float().mean()
     rate1 = (epe > 3).float().mean()
     error3 = epe.mean()
+    
+    # end point error for calculation for initial flow regression images
     epe = torch.sum((flow_preds[1] - flow_gt)**2, dim=1).sqrt()
     epe = epe.view(-1)[valid.view(-1)]
     error1 = epe.mean()
@@ -193,6 +215,7 @@ def find_free_port():
     sock.close()
     # NOTE: there is still a chance the port could be taken by other processes.
     return port
+
 def main():
     args = parser.parse_args()
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
@@ -244,6 +267,7 @@ def fetch_optimizer(args, model):
 
 def main_process():
     return not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % args.ngpus_per_node == 0)
+
 def main_worker(gpu, ngpus_per_node, argss):
     global args
     args = argss
@@ -354,8 +378,6 @@ def main_worker(gpu, ngpus_per_node, argss):
             }, True)
 
 
-
-
 def train(training_data_loader, model, optimizer, scheduler, logger, epoch):
     valid_iteration = 0
     model.train()
@@ -364,12 +386,16 @@ def train(training_data_loader, model, optimizer, scheduler, logger, epoch):
         if main_process():
             print("Epoch " + str(epoch) + ": freezing bn...")
             sys.stdout.flush()
+    
     for iteration, batch in enumerate(training_data_loader):
+        
         input1, input2, target, valid = Variable(batch[0], requires_grad=True), Variable(batch[1], requires_grad=True), Variable(batch[2], requires_grad=False), Variable(batch[3], requires_grad=False)
+        
         input1 = input1.cuda(non_blocking=True)
         input2 = input2.cuda(non_blocking=True)
         target = target.cuda(non_blocking=True)
         valid = valid.cuda(non_blocking=True)
+
         if len(valid.shape) > 3:
             valid = valid.squeeze(1)
         if valid.sum() > 0:
