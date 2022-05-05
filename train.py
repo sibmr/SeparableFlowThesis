@@ -217,12 +217,24 @@ def find_free_port():
     return port
 
 def main():
+    
+    # parse command line arguments
     args = parser.parse_args()
+
+    # add gpu indices as environement variable
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
+    
+    # create list of gpu indices
     args.gpu = (args.gpu).split(',')
+    
+    # enable benchmarking to auto-tune computation for hardware
+    # initially more overhead, can speed up computation in the long run 
     torch.backends.cudnn.benchmark = True
-   # os.environ["CUDA_VISIBLE_DEVICES"] = ','.join(str(x) for x in args.gpu.split(','))
+    
+    # os.environ["CUDA_VISIBLE_DEVICES"] = ','.join(str(x) for x in args.gpu.split(','))
     #args.distributed = args.world_size > 1 or args.multiprocessing_distributed
+
+    # set seeds for random generators
     if args.manual_seed is not None:
         np.random.seed(args.manual_seed)
         torch.manual_seed(args.manual_seed)
@@ -230,25 +242,44 @@ def main():
         torch.cuda.manual_seed_all(args.manual_seed)
         cudnn.benchmark = True
         cudnn.deterministic = True
+
+    # set gpus per node to number of gpus
     args.ngpus_per_node = len(args.gpu)
+
+    # if there is one gpu, then no distributed training
     if len(args.gpu) == 1:
         args.sync_bn = False
         args.distributed = False
         args.multiprocessing_distributed = False
         main_worker(args.gpu, args.ngpus_per_node, args)
+    
+    # if there are multiple gpus, create one process for each one
+    # probably all processes run on the same node, since dist_url = localhost
     else:
+        # TODO: assert this False
         args.sync_bn = True
         args.distributed = True
         args.multiprocessing_distributed = True
         port = find_free_port()
         args.dist_url = f"tcp://127.0.0.1:{port}"
-        #print(args)
-        #quit()
+        
+        # world size goes from number of nodes to total number of gpus
         args.world_size = args.ngpus_per_node * args.world_size
+        
+        # spawn new process for each gpu
         mp.spawn(main_worker, nprocs=args.ngpus_per_node, args=(args.ngpus_per_node, args))
 
 def fetch_optimizer(args, model):
-    """ Create the optimizer and learning rate scheduler """
+    """ Create the optimizer and learning rate scheduler
+
+    Args:
+        args (argparse.Namespace): model parameters
+        model (torch.nn.Module): model to be trained
+
+    Returns:
+        Tuple[torch.optim.AdamW, torch.optim.lr_scheduler.OneCycleLR]: create optimizer
+            and learning rate scheduler for the model
+    """
     modules_ori = [model.cnet, model.fnet, model.update_block, model.guidance]
     modules_new = [model.cost_agg1, model.cost_agg2]
     params_list = []
@@ -266,36 +297,61 @@ def fetch_optimizer(args, model):
     return optimizer, scheduler
 
 def main_process():
+    """ check if the current process is the main process
+
+    Returns:
+        bool: true, if and only if the current process is the main one
+    """
     return not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % args.ngpus_per_node == 0)
 
 def main_worker(gpu, ngpus_per_node, argss):
+    """ main function executed in each process
+
+    Args:
+        gpu (string): gpu index
+        ngpus_per_node (int): number of gpus per node
+        argss (argparse.Namespace): arguments passed to the worker
+    """
+
+    # set process-wide arguments to the ones passed on to it
     global args
     args = argss
+    
+    # register current process with process group
     if args.distributed:
+        # TODO: add assert to check that this is not executed
         if args.dist_url == "env://" and args.rank == -1:
             args.rank = int(os.environ["RANK"])
         if args.multiprocessing_distributed:
             args.rank = args.rank * ngpus_per_node + gpu
         dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url, world_size=args.world_size, rank=args.rank)
 
+    # create Separable Flow module and get the optimizer
     model = SepFlow(args)
     optimizer, scheduler = fetch_optimizer(args, model)
 
+    # synchronize batchnorm between processes
     if args.sync_bn:
         model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
+    
+    # if there are multiple gpus, DistributedDataParallel is usually faster for any number of nodes
     if args.distributed:
         torch.cuda.set_device(gpu)
         args.batchSize = int(args.batchSize / args.ngpus_per_node)
         args.testBatchSize = int(args.testBatchSize / args.ngpus_per_node)
         args.workers = int((args.workers + args.ngpus_per_node - 1) / args.ngpus_per_node)
         model = torch.nn.parallel.DistributedDataParallel(model.cuda(), device_ids=[gpu])
+    
+    # if there is only one gpu, DataParallel is simpler to use
     else:
         model = torch.nn.DataParallel(model).cuda()
 
     #scheduler = None
+
+    # create logger
     logger = Logger(model, scheduler)
 
-
+    # load weights at the start of training
     if args.weights:
         if os.path.isfile(args.weights):
             checkpoint = torch.load(args.weights, map_location=lambda storage, loc: storage.cuda())
@@ -307,6 +363,8 @@ def main_worker(gpu, ngpus_per_node, argss):
         else:
             if main_process():
                 print("=> no checkpoint found at '{}'".format(args.weights))
+    
+    # load previous weights, but also optimizer and scheduler state 
     if args.resume:
         if os.path.isfile(args.resume):
             checkpoint = torch.load(args.resume, map_location=lambda storage, loc: storage.cuda())
@@ -323,12 +381,16 @@ def main_worker(gpu, ngpus_per_node, argss):
             if main_process():
                 print("=> no checkpoint found at '{}'".format(args.resume))
 
+    # create and load datasets for validation
     train_set = datasets.fetch_dataloader(args)
     val_set = datasets.KITTI(split='training')
     val_set3 = datasets.FlyingChairs(split='validation')
     val_set2_2 = datasets.MpiSintel(split='training', dstype='final')
     val_set2_1 = datasets.MpiSintel(split='training', dstype='clean')
+    
     sys.stdout.flush()
+    
+    # create DistributedSampler for datasets to load only relevant subset of dataset in each process
     if args.distributed:
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_set)
         val_sampler = torch.utils.data.distributed.DistributedSampler(val_set)
@@ -341,6 +403,8 @@ def main_worker(gpu, ngpus_per_node, argss):
         val_sampler2_1 = None
         val_sampler2_2 = None
         val_sampler3 = None
+
+    # create dataloader from Datset/DistributedSampler, for automated batching/shuffling
     training_data_loader = torch.utils.data.DataLoader(train_set, batch_size=args.batchSize, shuffle=(train_sampler is None), num_workers=args.workers, pin_memory=True, sampler=train_sampler, drop_last=True)
     val_data_loader = torch.utils.data.DataLoader(val_set, batch_size=args.testBatchSize, shuffle=False, num_workers=args.workers//2, pin_memory=True, sampler=val_sampler)
     val_data_loader2_2 = torch.utils.data.DataLoader(val_set2_2, batch_size=args.testBatchSize, shuffle=False, num_workers=args.workers//2, pin_memory=True, sampler=val_sampler2_2)
@@ -350,11 +414,16 @@ def main_worker(gpu, ngpus_per_node, argss):
     error = 100
     args.nEpochs = args.num_steps // len(training_data_loader) + 1
 
+    # epoch-wise training (other than raft)
     for epoch in range(args.start_epoch, args.nEpochs):
+        
         if args.distributed:
             train_sampler.set_epoch(epoch)
 
+        # train model for one epoch, e.g. numSteps / nEpochs
         train(training_data_loader, model, optimizer, scheduler, logger, epoch)
+        
+        # save check point only after the last three epochs
         if main_process() and epoch > args.nEpochs - 3:
             save_checkpoint(args.save_path, epoch,{
                     'epoch': epoch,
@@ -363,15 +432,22 @@ def main_worker(gpu, ngpus_per_node, argss):
                      'scheduler' : scheduler.state_dict(),
                  }, False)
         
+        # for chairs, validate on the chairs validation set
         if args.stage == 'chairs':
             loss = val(val_data_loader3, model, split='chairs')
+
+        # for sintel and things, validate on the sintel clean and final dataset 
+        # and kitti training dataset
         elif args.stage == 'sintel' or args.stage == 'things':
             loss_tmp = val(val_data_loader2_1, model, split='sintel', iters=32)
             loss_tmp = val(val_data_loader2_2, model, split='sintel', iters=32)
             loss_tmp = val(val_data_loader, model, split='kitti')
+        
+        # for kitti, valdiate on the kitti training dataset
         elif args.stage == 'kitti':
             loss_tmp = val(val_data_loader, model, split='kitti')
 
+    # if the current process is the main process, then save the model one final time after training
     if main_process():
         save_checkpoint(args.save_path, args.nEpochs,{
                 'state_dict': model.state_dict()
@@ -379,49 +455,92 @@ def main_worker(gpu, ngpus_per_node, argss):
 
 
 def train(training_data_loader, model, optimizer, scheduler, logger, epoch):
+    """ train the model for one epoch
+
+    Args:
+        training_data_loader (torch.utils.data.DataLoader): data loader for the epoch
+        model (torch.nn.Module): torch model
+        optimizer (torch.optim.Optimizer): optimizer used in training
+        scheduler (torch.optim.lr_scheduler.some_scheduler): learning rate scheduler
+        logger (Logger): logger for training stats
+        epoch (int): current epoch number
+    """
+    
+    # number of successful iterations/batches
     valid_iteration = 0
+    
+    # put model in training mode
     model.train()
+
+    # freeze parameters of the batch norm
     if args.freeze_bn:
         model.module.freeze_bn()
         if main_process():
             print("Epoch " + str(epoch) + ": freezing bn...")
             sys.stdout.flush()
     
+    # iterate over all batches in the dataset
     for iteration, batch in enumerate(training_data_loader):
         
+        # probably deprecated use of "Variable"
+        # Variable was at some point required to enable the forward pass for input tensors to the model
         input1, input2, target, valid = Variable(batch[0], requires_grad=True), Variable(batch[1], requires_grad=True), Variable(batch[2], requires_grad=False), Variable(batch[3], requires_grad=False)
         
+        # load inputs, target and valid to gpu asynchronously
         input1 = input1.cuda(non_blocking=True)
         input2 = input2.cuda(non_blocking=True)
         target = target.cuda(non_blocking=True)
         valid = valid.cuda(non_blocking=True)
 
+        # if valid has more dimensions than (batch, HT, WD), then remove dimensions of size 1
         if len(valid.shape) > 3:
             valid = valid.squeeze(1)
+
+        # check if there is at least one pixel with valid flow in the batch
+        # if there is None, there is nothing to do
         if valid.sum() > 0:
+
+            # set all gradients to zero
             optimizer.zero_grad()
+            
+            # additive noise with random magnitude
             if args.add_noise:
                 stdv = np.random.uniform(0.0, 5.0)
                 input1 = (input1 + stdv * torch.randn(*input1.shape).cuda()).clamp(0.0, 255.0)
                 input2 = (input2 + stdv * torch.randn(*input2.shape).cuda()).clamp(0.0, 255.0)
 
+            # get predictions from model
             flow_predictions = model(input1, input2, iters=args.iters)            
+            
+            # calculate loss
             loss, metrics = sequence_loss(flow_predictions, target, valid)
 
+            # backpropagation of loss gradient
             loss.backward()
+
+            # update parameters
             optimizer.step()
+
+            # update learning rate
             scheduler.step()
+            
+            # after each batch, change learning rate 
             adjust_learning_rate(optimizer, scheduler)
+            
+            # if learning rate becomes too small, stop epoch early
             if  scheduler.get_last_lr()[0] < 0.0000002:
                 return
 
-            
+            # iteration counter only increased if iteration was successful
             valid_iteration += 1
 
+            # logging and saving only in main process
             if main_process():
                 logger.push(metrics)
-         #       print(metrics)
-                if valid_iteration % 10000 == 0: 
+
+                # every 10000 valid iterations save checkpoint (might not even occurr in an epoch)
+                if valid_iteration % 10000 == 0:
+
                     save_checkpoint(args.save_path, epoch,{
                             'epoch': epoch,
                             'state_dict': model.state_dict(),
@@ -432,37 +551,72 @@ def train(training_data_loader, model, optimizer, scheduler, logger, epoch):
             sys.stdout.flush()
 
 def val(testing_data_loader, model, split='sintel', iters=24):
+    
     epoch_error = 0
     epoch_error_rate0 = 0
     epoch_error_rate1 = 0
     valid_iteration = 0
+    
     model.eval()
+    
+    # error in the line below
+    # for testing_data_loader of kitti: RuntimeError: Trying to resize storage that is not resizable
     for iteration, batch in enumerate(testing_data_loader):
+        
         input1, input2, target, valid = Variable(batch[0],requires_grad=False), Variable(batch[1], requires_grad=False), Variable(batch[2], requires_grad=False), Variable(batch[3], requires_grad=False)
         input1 = input1.cuda(non_blocking=True)
         input2 = input2.cuda(non_blocking=True)
+        
         padder = InputPadder(input1.shape, mode=split)
         input1, input2 = padder.pad(input1, input2)
+        
         target = target.cuda(non_blocking=True)
         valid = valid.cuda(non_blocking=True)
         mag = torch.sum(target**2, dim=1, keepdim=False).sqrt()
+        
         if len(valid.shape) > 3:
             valid = valid.squeeze(1)
         valid = (valid >= 0.001) #& (mag < MAX_FLOW)
+        
+        # only evaluate if at least one pixel has valid flow ground truth
         if valid.sum()>0:
+            
+            # evaluate the model on the inputs, caluclate epe
             with torch.no_grad():
+                
+                # get the flow
                 _, flow = model(input1,input2, iters=iters)
+                
+                # remove padding
                 flow = padder.unpad(flow)
+                
+                # calculate endpoint error
                 epe = torch.sum((flow - target)**2, dim=1).sqrt()
+                
+                # remove all invalid pixel epes from the array
                 epe = epe.view(-1)[valid.view(-1)]
+                
+                # calculate percentage of all pixels with epe>1
                 rate0 = (epe > 1).float().mean()
+                
+                # calculate percentage of all pixels with epe>3
                 if split == 'kitti':
+                    # percentage of pixels with epe>3 and epe/target_flow_magnitude > 0.05
+                    # -> only count pixels where epe is at least 5% as large as the target flow magnitude 
                     rate1 = ((epe > 3.0) & ((epe/mag.view(-1)[valid.view(-1)]) > 0.05)).float().mean()
                 else:
                     rate1 = (epe > 3.0).float().mean()
+                
+                # get the average per-pixel epe
                 error = epe.mean()
+
+                # count iteration as successful
                 valid_iteration += 1
+            
+            # not executed
+            # calculates the epoch metrics, no metrics are calculated if not multiprocessing
             if args.multiprocessing_distributed:
+                # TODO: add assert for not executed
                 count = target.new_tensor([1], dtype=torch.long)
                 dist.all_reduce(error)
                 dist.all_reduce(rate0)
@@ -476,10 +630,13 @@ def val(testing_data_loader, model, split='sintel', iters=24):
                 epoch_error_rate0 += rate0.item()
                 epoch_error_rate1 += rate1.item()
 
+            # valid iteration never becomes 1000, thus the message below is never printed
             if main_process() and (valid_iteration % 1000 == 0):
                 print("===> Test({}/{}): Error: ({:.4f} {:.4f} {:.4f})".format(iteration, len(testing_data_loader), error.item(), rate0.item(), rate1.item()))
+            
             sys.stdout.flush()
 
+    # print epoch validation info, always zero without multiprocessing because of the above
     if main_process():
         print("===> Test: Avg. Error: ({:.4f} {:.4f} {:.4f})".format(epoch_error/valid_iteration, epoch_error_rate0/valid_iteration, epoch_error_rate1/valid_iteration))
 
@@ -493,10 +650,22 @@ def save_checkpoint(save_path, epoch,state, is_best):
     print("Checkpoint saved to {}".format(filename))
 
 def adjust_learning_rate(optimizer, scheduler):
+    """ adjust optimizer learning rate
+
+    Args:
+        optimizer (torch.optim.Optimizer): parameter optimizer
+        scheduler (torch.optim.lr_scheduler.OneCycleLR): learning rate updater
+    """
+
+    # use the only the first component of the latest learning rate
     lr = scheduler.get_last_lr()[0]
     nums = len(optimizer.param_groups)
+    
+    # for first nums-2 groups, set learning rate to lr
     for index in range(0, nums-2):
         optimizer.param_groups[index]['lr'] = lr
+
+    # for last two groups, set learning rate to lr*2.5
     for index in range(nums-2, nums):
         optimizer.param_groups[index]['lr'] = lr * 2.5
 
