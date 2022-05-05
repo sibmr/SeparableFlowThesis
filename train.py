@@ -228,7 +228,7 @@ def main():
     args.gpu = (args.gpu).split(',')
     
     # enable benchmarking to auto-tune computation for hardware
-    # initially more overhead, can speed up computation in the long run 
+    # initially more overhead, can speed up computation in the long run
     torch.backends.cudnn.benchmark = True
     
     # os.environ["CUDA_VISIBLE_DEVICES"] = ','.join(str(x) for x in args.gpu.split(','))
@@ -527,7 +527,8 @@ def train(training_data_loader, model, optimizer, scheduler, logger, epoch):
             # update learning rate
             scheduler.step()
             
-            # after each batch, change learning rate 
+            # after each batch, change learning rate
+            # TODO: why do they do this? scheduler.step() is responsible
             adjust_learning_rate(optimizer, scheduler)
             
             # if learning rate becomes too small, stop epoch early
@@ -566,19 +567,30 @@ def val(testing_data_loader, model, split='sintel', iters=24):
     # for testing_data_loader of kitti: RuntimeError: Trying to resize storage that is not resizable
     for iteration, batch in enumerate(testing_data_loader):
         
+        # create tensors/variables for inputs
         input1, input2, target, valid = Variable(batch[0],requires_grad=False), Variable(batch[1], requires_grad=False), Variable(batch[2], requires_grad=False), Variable(batch[3], requires_grad=False)
+        
+        # put input image tensors on gpu
         input1 = input1.cuda(non_blocking=True)
         input2 = input2.cuda(non_blocking=True)
         
+        # pad inputs to make them divisible by 8
         padder = InputPadder(input1.shape, mode=split)
         input1, input2 = padder.pad(input1, input2)
         
+        # put target flow and flow valid flags to gpu
         target = target.cuda(non_blocking=True)
         valid = valid.cuda(non_blocking=True)
+
+        # calculate magnitude of target flow vectors
         mag = torch.sum(target**2, dim=1, keepdim=False).sqrt()
         
+        # remove dimensions of size 1
+        # i.e. (batch, 1, HT, WD) -> (batch, HT, WD)
         if len(valid.shape) > 3:
             valid = valid.squeeze(1)
+
+        # convert valid floating point 0-1-tensor to bool tensor 
         valid = (valid >= 0.001) #& (mag < MAX_FLOW)
         
         # only evaluate if at least one pixel has valid flow ground truth
@@ -663,11 +675,24 @@ def val(testing_data_loader, model, split='sintel', iters=24):
     return epoch_error/valid_iteration
 
 def save_checkpoint(save_path, epoch,state, is_best):
+    """ simple method to store checkpoint including current epoch, weights, optimizer and lr_scheduler
+
+    Args:
+        save_path (str): (relative) path to store checkpoint
+        epoch (int): current epoch
+        state (dict): dictionary containing weights, optimizer and lr_scheduler
+        is_best (bool): whether this model achieves the new best performance
+    """
     filename = save_path + "_epoch_{}.pth".format(epoch)
+    
+    # save best model without the epoch tag
     if is_best:
         filename = save_path + ".pth"
+    
     torch.save(state, filename)
+    
     print("Checkpoint saved to {}".format(filename))
+
 
 def adjust_learning_rate(optimizer, scheduler):
     """ adjust optimizer learning rate
