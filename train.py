@@ -405,6 +405,7 @@ def main_worker(gpu, ngpus_per_node, argss):
         val_sampler3 = None
 
     # create dataloader from Datset/DistributedSampler, for automated batching/shuffling
+    # also responsible for preloading batches to RAM, before sending them to the gpu
     training_data_loader = torch.utils.data.DataLoader(train_set, batch_size=args.batchSize, shuffle=(train_sampler is None), num_workers=args.workers, pin_memory=True, sampler=train_sampler, drop_last=True)
     val_data_loader = torch.utils.data.DataLoader(val_set, batch_size=args.testBatchSize, shuffle=False, num_workers=args.workers//2, pin_memory=True, sampler=val_sampler)
     val_data_loader2_2 = torch.utils.data.DataLoader(val_set2_2, batch_size=args.testBatchSize, shuffle=False, num_workers=args.workers//2, pin_memory=True, sampler=val_sampler2_2)
@@ -424,7 +425,7 @@ def main_worker(gpu, ngpus_per_node, argss):
         train(training_data_loader, model, optimizer, scheduler, logger, epoch)
         
         # save check point only after the last three epochs
-        if main_process() and epoch > args.nEpochs - 3:
+        if main_process(): #and epoch > args.nEpochs - 3:
             save_checkpoint(args.save_path, epoch,{
                     'epoch': epoch,
                      'state_dict': model.state_dict(),
@@ -441,7 +442,9 @@ def main_worker(gpu, ngpus_per_node, argss):
         elif args.stage == 'sintel' or args.stage == 'things':
             loss_tmp = val(val_data_loader2_1, model, split='sintel', iters=32)
             loss_tmp = val(val_data_loader2_2, model, split='sintel', iters=32)
-            loss_tmp = val(val_data_loader, model, split='kitti')
+            
+            # results in error
+            # loss_tmp = val(val_data_loader, model, split='kitti')
         
         # for kitti, valdiate on the kitti training dataset
         elif args.stage == 'kitti':
@@ -616,16 +619,33 @@ def val(testing_data_loader, model, split='sintel', iters=24):
             # not executed
             # calculates the epoch metrics, no metrics are calculated if not multiprocessing
             if args.multiprocessing_distributed:
+                
                 # TODO: add assert for not executed
+                
+                # add 1-tensor for worker counting
                 count = target.new_tensor([1], dtype=torch.long)
+                
+                # collect metric values from workers and sum them
                 dist.all_reduce(error)
                 dist.all_reduce(rate0)
                 dist.all_reduce(rate1)
+                
+                # calculate number of workers executing this
                 dist.all_reduce(count)
                 n = count.item()
+                
+                # divide by number of workers
                 error /= n
                 rate0 /= n
                 rate1 /= n
+
+                # add to total epoch error
+                epoch_error += error.item()
+                epoch_error_rate0 += rate0.item()
+                epoch_error_rate1 += rate1.item()
+            else:
+
+                # much simpler for non-distributed version
                 epoch_error += error.item()
                 epoch_error_rate0 += rate0.item()
                 epoch_error_rate1 += rate1.item()
