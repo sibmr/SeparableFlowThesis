@@ -3,3 +3,5 @@ runs
 __pycache__
 checkpoints
 slurm_output
+.env
+.vscode

@@ -528,7 +528,8 @@ def train(training_data_loader, model, optimizer, scheduler, logger, epoch):
             scheduler.step()
             
             # after each batch, change learning rate
-            # TODO: why do they do this? scheduler.step() is responsible
+            # this is done to set the learning rate of the cost_agg1 and cost_agg2 module
+            # 2.5 times higher than the rest of the modules
             adjust_learning_rate(optimizer, scheduler)
             
             # if learning rate becomes too small, stop epoch early
@@ -695,7 +696,7 @@ def save_checkpoint(save_path, epoch,state, is_best):
 
 
 def adjust_learning_rate(optimizer, scheduler):
-    """ adjust optimizer learning rate
+    """ adjust optimizer learning rates individually for the parameter groups
 
     Args:
         optimizer (torch.optim.Optimizer): parameter optimizer
@@ -703,14 +704,24 @@ def adjust_learning_rate(optimizer, scheduler):
     """
 
     # use the only the first component of the latest learning rate
+    # the array returned by get_last_lr has six identical learning rates for the parameter groups
+    # i.e.: scheduler.get_last_lr() = np.ones((len(param_groups)))*lr
+    # where the six groups are: 
+    # [model.cnet, model.fnet, model.update_block, model.guidance, model.cost_agg1, model.cost_agg2]
     lr = scheduler.get_last_lr()[0]
     nums = len(optimizer.param_groups)
-    
+
     # for first nums-2 groups, set learning rate to lr
+    # learninig rate does not change: lr -> lr
+    # they are: [model.cnet, model.fnet, model.update_block, model.guidance]
     for index in range(0, nums-2):
         optimizer.param_groups[index]['lr'] = lr
 
     # for last two groups, set learning rate to lr*2.5
+    # learning rate changes: lr -> 2.5*lr
+    # they are: [model.cost_agg1, model.cost_agg2]
+    # this means that the learning rate for 1d cost aggregation 
+    # is chosen as 2.5 times higher than for the rest of the parameters
     for index in range(nums-2, nums):
         optimizer.param_groups[index]['lr'] = lr * 2.5
 
