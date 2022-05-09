@@ -12,7 +12,7 @@ date
 echo ==============================
 
 cd ~/git/thesis/SeparableFlow
-./resume.sh
+./train.sh
 
 
 echo ==============================
