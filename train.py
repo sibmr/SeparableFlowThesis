@@ -1,9 +1,8 @@
 from __future__ import print_function
 import argparse
-from math import log10
+from datetime import datetime
 import sys
 sys.path.append('core')
-import shutil
 import os
 import torch
 import torch.distributed as dist
@@ -12,18 +11,15 @@ import torch.nn.parallel
 import torch.backends.cudnn as cudnn
 import torch.optim as optim
 from torch.autograd import Variable
-from torch.utils.data import DataLoader
-import torch.nn.functional as F
 import torch.multiprocessing as mp
 import numpy as np
-import cv2
-import time
-import matplotlib.pyplot as plt
+
 from sepflow import SepFlow
-import evaluate
 import datasets
-from torch.utils.tensorboard import SummaryWriter
 from utils.utils import InputPadder, forward_interpolate
+
+from torch.utils.tensorboard import SummaryWriter
+import logging
 
 try:
     from torch.cuda.amp import GradScaler
@@ -41,21 +37,22 @@ except:
         def update(self):
             pass
 
+
+
 # Training settings
 parser = argparse.ArgumentParser(description='PyTorch SepFlow Example')
+
 parser.add_argument('--image_size', type=int, nargs='+', default=[384, 512])
 parser.add_argument('--resume', type=str, default='', help="resume from saved model")
 parser.add_argument('--weights', type=str, default='', help="weights from saved model")
 parser.add_argument('--batchSize', type=int, default=1, help='training batch size')
 parser.add_argument('--testBatchSize', type=int, default=1, help='testing batch size')
-parser.add_argument('--nEpochs', type=int, default=2048, help='number of epochs to train for')
 parser.add_argument('--lr', type=float, default=0.001, help='Learning Rate. Default=0.001')
 parser.add_argument('--cuda', type=int, default=1, help='use cuda? Default=True')
 parser.add_argument('--threads', type=int, default=1, help='number of threads for data loader to use')
 parser.add_argument('--manual_seed', type=int, default=1234, help='random seed to use. Default=123')
 parser.add_argument('--shift', type=int, default=0, help='random shift of left image. Default=0')
 parser.add_argument('--data_path', type=str, default='/export/work/feihu/flow/SceneFlow/', help="data root")
-parser.add_argument('--save_path', type=str, default='./checkpoints/', help="location to save models")
 parser.add_argument('--gpu',  default='0,1,2,3,4,5,6,7', type=str, help="gpu idxs")
 parser.add_argument('--workers', type=int, default=16, help="workers")
 parser.add_argument('--world_size', type=int, default=1, help="world_size")
@@ -67,7 +64,8 @@ parser.add_argument('--sync_bn', type=int, default=0, help="sync bn")
 parser.add_argument('--multiprocessing_distributed', type=int, default=0, help="multiprocess")
 parser.add_argument('--freeze_bn', type=int, default=0, help="freeze bn")
 parser.add_argument('--start_epoch', type=int, default=0, help="start epoch")
-parser.add_argument('--stage', type=str, default='chairs', help="training stage: 1) things 2) chairs 3) kitti 4) mixed.")
+parser.add_argument('--stage', type=str, default='chairs',
+                    help="training stage: 1) things 2) chairs 3) kitti 4) mixed.")
 parser.add_argument('--validation', type=str, nargs='+')
 parser.add_argument('--num_steps', type=int, default=100000)
 parser.add_argument('--mixed_precision', action='store_true', help='use mixed precision')
@@ -78,8 +76,12 @@ parser.add_argument('--clip', type=float, default=1.0)
 parser.add_argument('--dropout', type=float, default=0.0)
 parser.add_argument('--gamma', type=float, default=0.8, help='exponential weighting')
 parser.add_argument('--add_noise', action='store_true')
-parser.add_argument('--small', action='store_true', help='use small model')
-#parser.add_argument('--smoothl1', action='store_true', help='use smooth l1 loss')
+parser.add_argument("--run_name", type=str, default="unnamed",
+                    help="name used to identify the current run of the script")
+
+# Experiment (Multi-Training) settings
+parser.add_argument("--experiment_name", type=str, default="unnamed",
+                    help="name used to identify the current experiment")
 
 MAX_FLOW = 400
 SUM_FREQ = 100
@@ -161,29 +163,38 @@ def sequence_loss(flow_preds, flow_gt, valid, gamma=0.8, max_flow=MAX_FLOW):
     return flow_loss, metrics
 
 class Logger:
-    def __init__(self, model, scheduler):
-        self.model = model
-        self.scheduler = scheduler
-        self.total_steps = 0
+    def __init__(self, log_dir, current_steps):
+        self.total_steps = current_steps
         self.running_loss = {}
         self.writer = None
 
-    def _print_training_status(self):
+        self.log_dir = log_dir
+
+        self.logger = logging.getLogger("sepflow.stats")
+
+        # create file to store metrics to
+        self.metrics_file = os.path.join(self.log_dir, "metrics.csv")
+        if not os.path.exists(self.metrics_file):
+            with open(self.metrics_file, "w") as file:
+                    file.write("step,lr\n")
+
+    def _print_training_status(self, lr):
         metrics_data = [self.running_loss[k]/SUM_FREQ for k in sorted(self.running_loss.keys())]
-        training_str = "[{:6d}, {:10.7f}] ".format(self.total_steps+1, self.scheduler.get_last_lr()[0])
+        training_str = "[{:6d}, {:10.7f}] ".format(self.total_steps+1, lr)
         metrics_str = ("{:10.4f}, "*len(metrics_data)).format(*metrics_data)
         
         # print the training status
         print(training_str + metrics_str)
+        self.logger.info(f"{metrics_str} {training_str}")
 
         if self.writer is None:
-            self.writer = SummaryWriter()
+            self.writer = SummaryWriter(log_dir = self.log_dir)
 
         for k in self.running_loss:
             self.writer.add_scalar(k, self.running_loss[k]/SUM_FREQ, self.total_steps)
             self.running_loss[k] = 0.0
 
-    def push(self, metrics):
+    def push(self, metrics, lr):
         self.total_steps += 1
 
         for key in metrics:
@@ -192,13 +203,16 @@ class Logger:
 
             self.running_loss[key] += metrics[key]
 
+        with open(self.metrics_file, "a") as file:
+            file.write("{:6d},{:10.7f}\n".format(self.total_steps, lr))
+
         if self.total_steps % SUM_FREQ == SUM_FREQ-1:
-            self._print_training_status()
+            self._print_training_status(lr)
             self.running_loss = {}
 
     def write_dict(self, results):
         if self.writer is None:
-            self.writer = SummaryWriter()
+            self.writer = SummaryWriter(log_dir = self.log_dir)
 
         for key in results:
             self.writer.add_scalar(key, results[key], self.total_steps)
@@ -217,20 +231,20 @@ def find_free_port():
     return port
 
 def main():
-    
+
     # parse command line arguments
     args = parser.parse_args()
 
     # add gpu indices as environement variable
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
-    
+
     # create list of gpu indices
     args.gpu = (args.gpu).split(',')
-    
+
     # enable benchmarking to auto-tune computation for hardware
     # initially more overhead, can speed up computation in the long run
     torch.backends.cudnn.benchmark = True
-    
+
     # os.environ["CUDA_VISIBLE_DEVICES"] = ','.join(str(x) for x in args.gpu.split(','))
     #args.distributed = args.world_size > 1 or args.multiprocessing_distributed
 
@@ -246,17 +260,28 @@ def main():
     # set gpus per node to number of gpus
     args.ngpus_per_node = len(args.gpu)
 
+    if not os.path.isdir('checkpoints'):
+        os.mkdir('checkpoints')
+
+    args.experiment_path = os.path.join('checkpoints', args.experiment_name)
+    if not os.path.isdir(args.experiment_path):
+        os.mkdir(args.experiment_path)
+
+    args.run_path = os.path.join(args.experiment_path, args.run_name)
+
     # if there is one gpu, then no distributed training
     if len(args.gpu) == 1:
         args.sync_bn = False
         args.distributed = False
         args.multiprocessing_distributed = False
         main_worker(args.gpu, args.ngpus_per_node, args)
-    
+
     # if there are multiple gpus, create one process for each one
     # probably all processes run on the same node, since dist_url = localhost
     else:
-        # TODO: assert this False
+        
+        assert False, "part of multiprocessing executed"
+
         args.sync_bn = True
         args.distributed = True
         args.multiprocessing_distributed = True
@@ -319,7 +344,9 @@ def main_worker(gpu, ngpus_per_node, argss):
     
     # register current process with process group
     if args.distributed:
-        # TODO: add assert to check that this is not executed
+        
+        assert False, "part of multiprocessing executed"
+        
         if args.dist_url == "env://" and args.rank == -1:
             args.rank = int(os.environ["RANK"])
         if args.multiprocessing_distributed:
@@ -336,6 +363,9 @@ def main_worker(gpu, ngpus_per_node, argss):
     
     # if there are multiple gpus, DistributedDataParallel is usually faster for any number of nodes
     if args.distributed:
+
+        assert False, "part of multiprocessing executed"
+
         torch.cuda.set_device(gpu)
         args.batchSize = int(args.batchSize / args.ngpus_per_node)
         args.testBatchSize = int(args.testBatchSize / args.ngpus_per_node)
@@ -347,9 +377,6 @@ def main_worker(gpu, ngpus_per_node, argss):
         model = torch.nn.DataParallel(model).cuda()
 
     #scheduler = None
-
-    # create logger
-    logger = Logger(model, scheduler)
 
     # load weights at the start of training
     if args.weights:
@@ -363,7 +390,7 @@ def main_worker(gpu, ngpus_per_node, argss):
         else:
             if main_process():
                 print("=> no checkpoint found at '{}'".format(args.weights))
-    
+
     # load previous weights, but also optimizer and scheduler state 
     if args.resume:
         if os.path.isfile(args.resume):
@@ -381,6 +408,39 @@ def main_worker(gpu, ngpus_per_node, argss):
             if main_process():
                 print("=> no checkpoint found at '{}'".format(args.resume))
 
+    # create logger
+    stats_logger = Logger(log_dir=args.experiment_path, current_steps=0)
+
+    filehandler = logging.FileHandler(os.path.join(args.experiment_path, "log.txt"))
+    # In the file, write Info or the other things with higer lever than info: error, warning and stuff.
+    filehandler.setLevel(logging.INFO)
+
+    streamhandler = logging.StreamHandler()
+    streamhandler.setLevel(logging.DEBUG)
+    formatter = logging.Formatter("%(name)s:%(levelname)s:%(message)s")
+    filehandler.setFormatter(formatter)
+    streamhandler.setFormatter(formatter)
+
+    logger = logging.getLogger("sepflow")
+    logger.setLevel(logging.DEBUG)
+    logger.addHandler(filehandler)
+    logger.addHandler(streamhandler)
+
+    logger.info("starting to train")
+
+    train_phase(model, optimizer, scheduler, stats_logger)
+
+
+def train_phase(model, optimizer, scheduler, stats_logger):
+    """ train the given model for one phase (usually one dataset)
+
+    Args:
+        model (torch.Module): model to train
+        optimizer (torch.optim.AdamW): optimizer to use
+        scheduler (torch.optim.lr_scheduler.OneCycleLR): learning rate scheduler to use
+        stats_logger (Logger): logger to use
+    """
+    
     # create and load datasets for validation
     train_set = datasets.fetch_dataloader(args)
     val_set = datasets.KITTI(split='training')
@@ -415,18 +475,29 @@ def main_worker(gpu, ngpus_per_node, argss):
     error = 100
     args.nEpochs = args.num_steps // len(training_data_loader) + 1
 
+    total_steps = 0
+
+    logger = logging.getLogger("sepflow.train")
+    logger.info(f"Start training run '{args.run_name}'")
+
     # epoch-wise training (other than raft)
     for epoch in range(args.start_epoch, args.nEpochs):
-        
         if args.distributed:
             train_sampler.set_epoch(epoch)
 
-        # train model for one epoch, e.g. numSteps / nEpochs
-        train(training_data_loader, model, optimizer, scheduler, logger, epoch)
+        logger.info(vars(args))
+
+        logger = logging.getLogger("sepflow.train.epoch")
+        logger.info(f"Start epoch {epoch}")
         
+        # train model for one epoch, e.g. numSteps / nEpochs
+        total_steps += train(training_data_loader, model, optimizer, scheduler, stats_logger, epoch)
+        
+        logger.info(f"Steps: {total_steps}")
+
         # save check point only after the last three epochs
         if main_process(): #and epoch > args.nEpochs - 3:
-            save_checkpoint(args.save_path, epoch,{
+            save_checkpoint(args.run_path, epoch,{
                     'epoch': epoch,
                      'state_dict': model.state_dict(),
                      'optimizer' : optimizer.state_dict(),
@@ -435,27 +506,26 @@ def main_worker(gpu, ngpus_per_node, argss):
         
         # for chairs, validate on the chairs validation set
         if args.stage == 'chairs':
-            loss = val(val_data_loader3, model, split='chairs')
+            val_tuple = val(val_data_loader3, model, split='chairs', validation_title="FlyingChairs validation", stats_logger=stats_logger)
 
         # for sintel and things, validate on the sintel clean and final dataset 
         # and kitti training dataset
         elif args.stage == 'sintel' or args.stage == 'things':
-            loss_tmp = val(val_data_loader2_1, model, split='sintel', iters=32)
-            loss_tmp = val(val_data_loader2_2, model, split='sintel', iters=32)
-            
+            val_tuple = val(val_data_loader2_1, model, split='sintel', iters=32, validation_title="Sintel clean training", stats_logger=stats_logger)
+            val_tuple = val(val_data_loader2_2, model, split='sintel', iters=32, validation_title="Sintel final training", stats_logger=stats_logger)
+
             # results in error
             # loss_tmp = val(val_data_loader, model, split='kitti')
         
         # for kitti, valdiate on the kitti training dataset
         elif args.stage == 'kitti':
-            loss_tmp = val(val_data_loader, model, split='kitti')
+            val_tuple = val(val_data_loader, model, split='kitti', validation_title="KITTI training", stats_logger=stats_logger)
 
     # if the current process is the main process, then save the model one final time after training
     if main_process():
-        save_checkpoint(args.save_path, args.nEpochs,{
+        save_checkpoint(args.run_path, args.nEpochs,{
                 'state_dict': model.state_dict()
             }, True)
-
 
 def train(training_data_loader, model, optimizer, scheduler, logger, epoch):
     """ train the model for one epoch
@@ -469,6 +539,8 @@ def train(training_data_loader, model, optimizer, scheduler, logger, epoch):
         epoch (int): current epoch number
     """
     
+    start_time = datetime.now()
+
     # number of successful iterations/batches
     valid_iteration = 0
     
@@ -534,19 +606,19 @@ def train(training_data_loader, model, optimizer, scheduler, logger, epoch):
             
             # if learning rate becomes too small, stop epoch early
             if  scheduler.get_last_lr()[0] < 0.0000002:
-                return
+                return valid_iteration
 
             # iteration counter only increased if iteration was successful
             valid_iteration += 1
 
             # logging and saving only in main process
             if main_process():
-                logger.push(metrics)
+                logger.push(metrics, scheduler.get_last_lr()[0])
 
                 # every 10000 valid iterations save checkpoint (might not even occurr in an epoch)
                 if valid_iteration % 10000 == 0:
 
-                    save_checkpoint(args.save_path, epoch,{
+                    save_checkpoint(args.run_path, epoch,{
                             'epoch': epoch,
                             'state_dict': model.state_dict(),
                             'optimizer' : optimizer.state_dict(),
@@ -554,9 +626,18 @@ def train(training_data_loader, model, optimizer, scheduler, logger, epoch):
                         }, False)
 
             sys.stdout.flush()
-
-def val(testing_data_loader, model, split='sintel', iters=24):
     
+    end_time = datetime.now()
+    time_diff = end_time - start_time
+    logger = logging.getLogger("sepflow.train.epoch")
+    logger.info(f"Started epoch at {start_time} and took {time_diff}")
+
+    return valid_iteration
+
+def val(testing_data_loader, model, split='sintel', iters=24, validation_title="unnamed_validation", stats_logger=None):
+    
+    start_time = datetime.now()
+
     epoch_error = 0
     epoch_error_rate0 = 0
     epoch_error_rate1 = 0
@@ -633,7 +714,7 @@ def val(testing_data_loader, model, split='sintel', iters=24):
             # calculates the epoch metrics, no metrics are calculated if not multiprocessing
             if args.multiprocessing_distributed:
                 
-                # TODO: add assert for not executed
+                assert False, "part of multiprocessing executed"
                 
                 # add 1-tensor for worker counting
                 count = target.new_tensor([1], dtype=torch.long)
@@ -669,11 +750,34 @@ def val(testing_data_loader, model, split='sintel', iters=24):
             
             sys.stdout.flush()
 
+    avg_epoch_error = epoch_error/valid_iteration
+    avg_g1_rate = epoch_error_rate0/valid_iteration
+    avg_g3_rate = epoch_error_rate1/valid_iteration
+
+    val_tuple = (avg_epoch_error, avg_g1_rate, avg_g3_rate)
+
     # print epoch validation info, always zero without multiprocessing because of the above
     if main_process():
-        print("===> Test: Avg. Error: ({:.4f} {:.4f} {:.4f})".format(epoch_error/valid_iteration, epoch_error_rate0/valid_iteration, epoch_error_rate1/valid_iteration))
+        print("===> Test: Avg. Error: ({:.4f} {:.4f} {:.4f})".format(*val_tuple))
 
-    return epoch_error/valid_iteration
+    end_time = datetime.now()
+    time_diff = end_time - start_time
+
+    logger = logging.getLogger("sepflow.train.epoch")
+    logger.info(f"Started validation at {start_time} and took {time_diff}")
+    logger.info(    f"{validation_title}: "
+                        +   f"epe={val_tuple[0]}, "
+                        +   f"avg(epe>1)={val_tuple[1]}, "
+                        +   f"avg(epe>3)={val_tuple[2]}")
+
+    no_space_title = "_".join(validation_title.split(" "))
+    stats_logger.write_dict({
+        f"{no_space_title}_epe" : avg_epoch_error,
+        f"{no_space_title}_1px" : avg_g1_rate,
+        f"{no_space_title}_3px" : avg_g3_rate
+    })
+
+    return val_tuple
 
 def save_checkpoint(save_path, epoch,state, is_best):
     """ simple method to store checkpoint including current epoch, weights, optimizer and lr_scheduler

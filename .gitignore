@@ -1,7 +1,10 @@
 libs/GANet/build
 runs
 __pycache__
-checkpoints
+log.txt
+metrics.csv
+*.pth
+events.out.tfevents.*
 slurm_output
 .env
 .vscode
