@@ -48,7 +48,6 @@ parser.add_argument('--weights', type=str, default='', help="weights from saved 
 parser.add_argument('--batchSize', type=int, default=1, help='training batch size')
 parser.add_argument('--testBatchSize', type=int, default=1, help='testing batch size')
 parser.add_argument('--lr', type=float, default=0.001, help='Learning Rate. Default=0.001')
-parser.add_argument('--cuda', type=int, default=1, help='use cuda? Default=True')
 parser.add_argument('--threads', type=int, default=1, help='number of threads for data loader to use')
 parser.add_argument('--manual_seed', type=int, default=1234, help='random seed to use. Default=123')
 parser.add_argument('--shift', type=int, default=0, help='random shift of left image. Default=0')
@@ -76,6 +75,8 @@ parser.add_argument('--clip', type=float, default=1.0)
 parser.add_argument('--dropout', type=float, default=0.0)
 parser.add_argument('--gamma', type=float, default=0.8, help='exponential weighting')
 parser.add_argument('--add_noise', action='store_true')
+parser.add_argument('--use_4d_corr', action='store_true', help='whether to use the 4d correlation volume directly')
+parser.add_argument('--num_corr_channels', type=int, default=2)
 parser.add_argument("--run_name", type=str, default="unnamed",
                     help="name used to identify the current run of the script")
 

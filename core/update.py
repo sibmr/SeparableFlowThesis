@@ -77,35 +77,97 @@ class SmallMotionEncoder(nn.Module):
         return torch.cat([out, flow], dim=1)
 
 class BasicMotionEncoder(nn.Module):
+    """ computes motion features """
     def __init__(self, args):
         super(BasicMotionEncoder, self).__init__()
+        
+        # number of correlation features per pixel in 4d correlation volume
         cor_planes = args.corr_levels * (2*args.corr_radius + 1)**2
+        
+        # number of correlation features per pixel in 3d correlation volumes
         cor1_planes = args.corr_levels * (2*args.corr_radius + 1)
+        
+        # inital, channel-combining layers with kernel size 1
         self.convc1 = nn.Conv2d(cor_planes, 256, 1, padding=0)
         self.convc11 = nn.Conv2d(cor1_planes, 64, 1, padding=0)
         self.convc12 = nn.Conv2d(cor1_planes, 64, 1, padding=0)
+        
+        # intermediate, spatial/channel-combining layers with kernel size 3
         self.convc2 = nn.Conv2d(256, 192, 3, padding=1)
         self.convc21 = nn.Conv2d(64, 64, 3, padding=1)
         self.convc22 = nn.Conv2d(64, 64, 3, padding=1)
-        self.convf1 = nn.Conv2d(2, 128, 7, padding=3)
-        self.convf1 = nn.Conv2d(2, 128, 7, padding=3)
+        
+        # flow processing layers
         self.convf1 = nn.Conv2d(2, 128, 7, padding=3)
         self.convf2 = nn.Conv2d(128, 64, 3, padding=1)
+        
+        # final convolution, combining correlation volumes and flow
+        # (batch, 64+192+64*2, ht, wd) -> (batch, 128-2, ht, wd)
         self.conv = nn.Conv2d(64+192+64*2, 128-2, 3, padding=1)
 
     def forward(self, flow, corr, corr1, corr2):
+        # process 4d correlation volume
         cor = F.relu(self.convc1(corr))
         cor = F.relu(self.convc2(cor))
+        # process 3d correlation volume 1
         cor1 = F.relu(self.convc11(corr1))
         cor1 = F.relu(self.convc21(cor1))
+        # process 3d correlation volume 2
         cor2 = F.relu(self.convc12(corr2))
         cor2 = F.relu(self.convc22(cor2))
+        # process current flow
         flo = F.relu(self.convf1(flow))
         flo = F.relu(self.convf2(flo))
 
+        # combine flow and correlation volume in final layer
         cor_flo = torch.cat([cor, cor1, cor2, flo], dim=1)
         out = F.relu(self.conv(cor_flo))
+        
+        # preserve original flow as motion feature by adding it to the output
         return torch.cat([out, flow], dim=1)
+
+class BasicMotionEncoderNo4dCorr(nn.Module):
+    """ computes motion features without using 4d correlation volume"""
+    
+    def __init__(self, args):
+        super(BasicMotionEncoderNo4dCorr, self).__init__()
+        
+        # number of correlation features per pixel in 3d correlation volumes
+        cor1_planes = args.corr_levels * (2*args.corr_radius + 1)
+        
+        # inital, channel-combining layers with kernel size 1
+        self.convc11 = nn.Conv2d(cor1_planes, 64, 1, padding=0)
+        self.convc12 = nn.Conv2d(cor1_planes, 64, 1, padding=0)
+        
+        # intermediate, spatial/channel-combining layers with kernel size 3
+        self.convc21 = nn.Conv2d(64, 64, 3, padding=1)
+        self.convc22 = nn.Conv2d(64, 64, 3, padding=1)
+        
+        # flow processing layers
+        self.convf1 = nn.Conv2d(2, 128, 7, padding=3)
+        self.convf2 = nn.Conv2d(128, 64, 3, padding=1)
+        
+        # final convolution, combining correlation volumes and flow
+        # (batch, 64+192+64*2, ht, wd) -> (batch, 128-2, ht, wd)
+        self.conv = nn.Conv2d(64 + 64*2, 128-2, 3, padding=1)
+
+    def forward(self, flow, corr1, corr2):
+        # process 3d correlation volume 1
+        cor1 = F.relu(self.convc11(corr1))
+        cor1 = F.relu(self.convc21(cor1))
+        # process 3d correlation volume 2
+        cor2 = F.relu(self.convc12(corr2))
+        cor2 = F.relu(self.convc22(cor2))
+        # process current flow
+        flo = F.relu(self.convf1(flow))
+        flo = F.relu(self.convf2(flo))
+
+        # combine flow and correlation volume in final layer
+        cor_flo = torch.cat([cor1, cor2, flo], dim=1)
+        out = F.relu(self.conv(cor_flo))
+        
+        # preserve original flow as motion feature by adding it to the output
+        return torch.cat([out,   flow], dim=1)
 
 class SmallUpdateBlock(nn.Module):
     def __init__(self, args, hidden_dim=96):
@@ -126,7 +188,12 @@ class BasicUpdateBlock(nn.Module):
     def __init__(self, args, hidden_dim=128, input_dim=128):
         super(BasicUpdateBlock, self).__init__()
         self.args = args
-        self.encoder = BasicMotionEncoder(args)
+
+        if self.args.use_4d_corr:
+            self.encoder = BasicMotionEncoder(args)
+        else:
+            self.encoder = BasicMotionEncoderNo4dCorr(args)
+        
         self.gru = SepConvGRU(hidden_dim=hidden_dim, input_dim=128+hidden_dim)
         self.flow_head = FlowHead(hidden_dim, hidden_dim=256)
 
@@ -139,8 +206,10 @@ class BasicUpdateBlock(nn.Module):
         
         # motion features include flow and a 4d and 3d motion representation
         # compared to raft, includes additional corr1 and corr2 volume
-        motion_features = self.encoder(flow, corr, corr1, corr2)
-        
+        if self.args.use_4d_corr:
+            motion_features = self.encoder(flow, corr, corr1, corr2)
+        else:
+            motion_features = self.encoder(flow, corr1, corr2)
         # same combining context and motion features, same as raft
         inp = torch.cat([inp, motion_features], dim=1)
 

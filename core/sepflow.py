@@ -231,8 +231,17 @@ class SepFlow(nn.Module):
         self.cnet = BasicEncoder(output_dim=hdim+cdim, norm_fn='batch', dropout=args.dropout)
         self.update_block = BasicUpdateBlock(self.args, hidden_dim=hdim)
         self.guidance = Guidance(channels=256)
-        self.cost_agg1 = CostAggregation(in_channel=8)
-        self.cost_agg2 = CostAggregation(in_channel=8)
+        self.cost_agg1 = CostAggregation(in_channel=args.num_corr_channels*args.corr_levels)
+        self.cost_agg2 = CostAggregation(in_channel=args.num_corr_channels*args.corr_levels)
+
+        if args.num_corr_channels > 2:
+            self.attention1 = torch.nn.Conv3d(2, args.num_corr_channels-2, 3, padding=1)
+            self.attention2 = torch.nn.Conv3d(2, args.num_corr_channels-2, 3, padding=1)
+            self.attention_weights = (self.attention1, self.attention2)
+        else:
+            self.attention1 = None
+            self.attention2 = None
+            self.attention_weights = None
 
     def freeze_bn(self):
         count1, count2, count3 = 0, 0, 0
@@ -313,7 +322,7 @@ class SepFlow(nn.Module):
         # They consist of the max and avg of the u column/ v row
         # C_u: (batch, 2*levels, wd, ht, wd)
         # C_v: (batch, 2*levels, ht, ht, wd)
-        corr1, corr2 = corr_fn(None, sep=True)
+        corr1, corr2 = corr_fn(None, sep=True, attention_weights=self.attention_weights)
         
         # initializing the flow (like raft, zero-flow)
         # coords1 - coords0 = flow = zeros
@@ -365,7 +374,10 @@ class SepFlow(nn.Module):
             
             # apply update block: flow refinement
             with autocast(enabled=self.args.mixed_precision):
-                net, up_mask, delta_flow = self.update_block(net, inp, corr, corr1, corr2, flow)
+                if self.args.use_4d_corr:
+                    net, up_mask, delta_flow = self.update_block(net, inp, corr, corr1, corr2, flow)
+                else:
+                    net, up_mask, delta_flow = self.update_block(net, inp, corr1, corr2, flow)
 
             # F(t+1) = F(t) + \Delta(t)
             coords1 = coords1 + delta_flow
