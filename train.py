@@ -75,7 +75,7 @@ parser.add_argument('--clip', type=float, default=1.0)
 parser.add_argument('--dropout', type=float, default=0.0)
 parser.add_argument('--gamma', type=float, default=0.8, help='exponential weighting')
 parser.add_argument('--add_noise', action='store_true')
-parser.add_argument('--use_4d_corr', action='store_true', help='whether to use the 4d correlation volume directly')
+parser.add_argument('--no_4d_corr', action='store_true', help='whether to use the 4d correlation volume directly')
 parser.add_argument('--num_corr_channels', type=int, default=2)
 parser.add_argument("--run_name", type=str, default="unnamed",
                     help="name used to identify the current run of the script")

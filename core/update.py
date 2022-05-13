@@ -189,10 +189,10 @@ class BasicUpdateBlock(nn.Module):
         super(BasicUpdateBlock, self).__init__()
         self.args = args
 
-        if self.args.use_4d_corr:
-            self.encoder = BasicMotionEncoder(args)
-        else:
+        if self.args.no_4d_corr:
             self.encoder = BasicMotionEncoderNo4dCorr(args)
+        else:
+            self.encoder = BasicMotionEncoder(args)
         
         self.gru = SepConvGRU(hidden_dim=hidden_dim, input_dim=128+hidden_dim)
         self.flow_head = FlowHead(hidden_dim, hidden_dim=256)
@@ -206,10 +206,11 @@ class BasicUpdateBlock(nn.Module):
         
         # motion features include flow and a 4d and 3d motion representation
         # compared to raft, includes additional corr1 and corr2 volume
-        if self.args.use_4d_corr:
-            motion_features = self.encoder(flow, corr, corr1, corr2)
-        else:
+        if self.args.no_4d_corr:
             motion_features = self.encoder(flow, corr1, corr2)
+        else:
+            motion_features = self.encoder(flow, corr, corr1, corr2)
+            
         # same combining context and motion features, same as raft
         inp = torch.cat([inp, motion_features], dim=1)
 

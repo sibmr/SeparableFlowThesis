@@ -363,8 +363,12 @@ class SepFlow(nn.Module):
         for itr in range(iters):
             coords1 = coords1.detach()
             
-            # index 4d correlation volume -> multi-scale correlation features
-            corr = corr_fn(coords1) # index correlation volume
+            # only index the 4d correlation volume if it is used
+            if self.args.no_4d_corr:
+                corr = None
+            else:
+                # index 4d correlation volume -> multi-scale correlation features
+                corr = corr_fn(coords1) # index correlation volume
             
             # index the two 3d correlation volumes
             corr1, corr2 = corr1d_fn(coords1) # index correlation volume
@@ -374,10 +378,7 @@ class SepFlow(nn.Module):
             
             # apply update block: flow refinement
             with autocast(enabled=self.args.mixed_precision):
-                if self.args.use_4d_corr:
-                    net, up_mask, delta_flow = self.update_block(net, inp, corr, corr1, corr2, flow)
-                else:
-                    net, up_mask, delta_flow = self.update_block(net, inp, corr1, corr2, flow)
+                net, up_mask, delta_flow = self.update_block(net, inp, corr, corr1, corr2, flow)
 
             # F(t+1) = F(t) + \Delta(t)
             coords1 = coords1 + delta_flow
