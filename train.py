@@ -307,11 +307,16 @@ def fetch_optimizer(args, model):
             and learning rate scheduler for the model
     """
     modules_ori = [model.cnet, model.fnet, model.update_block, model.guidance]
+
+    if args.num_corr_channels > 2:
+        modules_ori += [model.attention1, model.attention2]
+
     modules_new = [model.cost_agg1, model.cost_agg2]
     params_list = []
     for module in modules_ori:
         params_list.append(dict(params=module.parameters(), lr=args.lr))
     for module in modules_new:
+        # TODO: this seems to do the same as adjust_learning_rate(), why duplicate this?
         params_list.append(dict(params=module.parameters(), lr=args.lr * 2.5))
     #optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.wdecay, eps=args.epsilon)
     optimizer = optim.AdamW(params_list, lr=args.lr, weight_decay=args.wdecay, eps=args.epsilon)
