@@ -157,16 +157,12 @@ class CorrBlock:
 
                 # apply softmax over v-dimension
                 a_u = a_u.softmax(dim=3)
-
+                
                 # shape:
                 #       (batch, corr_channels-2,    1,          wd/2**i, ht, wd)    attention
                 #   *   (batch, 1,                  ht/2**i,    wd/2**i, ht, wd)    4d correlation volume
-                #   ->  (batch, corr_channels-2,    ht/2**i,    wd/2**i, ht, wd)    
-                adaptive_corr_u = a_u * shaped_corr
-
-                # shape:    (batch, corr_channels-2,    ht/2**i,    wd/2**i,    ht, wd)
-                #   ->      (batch, corr_channels-2,    ht/2**i,    ht, wd)
-                adaptive_corr_u = adaptive_corr_u.sum(dim=3)
+                #   ->  (batch, corr_channels-2,    ht/2**i,             ht, wd)    
+                adaptive_corr_u = torch.einsum('bcuvij,bcuvij->bcuij',a_u, shaped_corr)
 
                 # shape: (batch, 2, ht/2**i, ht, wd) -> (batch, corr_channels-2, ht/2**i, ht, wd)
                 a_v = attention2(sep_v)
@@ -177,11 +173,8 @@ class CorrBlock:
                 # shape:
                 #       (batch, corr_channels-2,    ht/2**i,    1,          ht, wd)    attention
                 #   *   (batch, 1,                  ht/2**i,    wd/2**i,    ht, wd)    4d correlation volume
-                #   ->  (batch, corr_channels-2,    ht/2**i,    wd/2**i,    ht, wd)
-                adaptive_corr_v = a_v * shaped_corr
-                # shape:    (batch, corr_channels-2, ht/2**i, wd/2**i, ht, wd) 
-                #   ->      (batch, corr_channels-2, wd/2**i, ht, wd)
-                adaptive_corr_v = adaptive_corr_v.sum(dim=2)
+                #   ->  (batch, corr_channels-2,                wd/2**i,    ht, wd)
+                adaptive_corr_v = torch.einsum('bcuvij,bcuvij->bcvij',a_v, shaped_corr)
 
                 # shape: (batch, corr_channels, ht/2**i, ht, wd)
                 sep_v = torch.cat((sep_v, adaptive_corr_u), dim=1)
