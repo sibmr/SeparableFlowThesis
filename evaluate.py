@@ -17,6 +17,8 @@ from utils import frame_utils
 from sepflow import SepFlow
 from utils.utils import InputPadder, forward_interpolate
 
+from tqdm import tqdm
+
 @torch.no_grad()
 def create_sintel_submission(model, iters=32, output_path='sintel_submission'):
     """ Create submission for the Sintel leaderboard """
@@ -92,7 +94,7 @@ def validate_chairs(model, iters=24):
     epe_list = []
 
     val_dataset = datasets.FlyingChairs(split='validation')
-    for val_id in range(len(val_dataset)):
+    for val_id in tqdm(range(len(val_dataset))):
         image1, image2, flow_gt, _ = val_dataset[val_id]
         image1 = image1[None].cuda()
         image2 = image2[None].cuda()
@@ -115,7 +117,7 @@ def validate_sintel(model, iters=32):
         val_dataset = datasets.MpiSintel(split='training', dstype=dstype)
         epe_list = []
 
-        for val_id in range(len(val_dataset)):
+        for val_id in tqdm(range(len(val_dataset))):
             image1, image2, flow_gt, _ = val_dataset[val_id]
             image1 = image1[None].cuda()
             image2 = image2[None].cuda()
@@ -145,11 +147,10 @@ def validate_sintel(model, iters=32):
 def validate_kitti(model, iters=24):
     """ Peform validation using the KITTI-2015 (train) split """
     model.eval()
-    file_path = "/export/work/feihu/kitti2015"
-    val_dataset = datasets.KITTI(split='training', root=file_path)
+    val_dataset = datasets.KITTI(split='training')
 
     out_list, epe_list = [], []
-    for val_id in range(len(val_dataset)):
+    for val_id in tqdm(range(len(val_dataset))):
         image1, image2, flow_gt, valid_gt = val_dataset[val_id]
         image1 = image1[None].cuda()
         image2 = image2[None].cuda()
@@ -219,6 +220,9 @@ def validate_kitti2012(model, iters=24):
     print("Validation KITTI2012: %f, %f" % (epe, f1))
     return {'kitti-epe': epe, 'kitti-f1': f1}
 
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--model', help="restore checkpoint")
@@ -226,9 +230,12 @@ if __name__ == '__main__':
     parser.add_argument('--small', action='store_true', help='use small model')
     parser.add_argument('--mixed_precision', action='store_true', help='use mixed precision')
     parser.add_argument('--alternate_corr', action='store_true', help='use efficent correlation implementation')
+    parser.add_argument('--no_4d_corr', action='store_true', help='whether to use the 4d correlation volume directly')
+    parser.add_argument('--num_corr_channels', type=int, default=2)
     args = parser.parse_args()
 
     model = torch.nn.DataParallel(SepFlow(args))
+    print(f"number of parameters: {count_parameters(model)}")
     checkpoint = torch.load(args.model)
     msg = model.load_state_dict(checkpoint['state_dict'], strict=False)
     print(msg)
@@ -237,22 +244,13 @@ if __name__ == '__main__':
     model.eval()
 
     with torch.no_grad():
-        if args.dataset == 'sintel':
-            create_sintel_submission(model.module)
-        elif args.dataset == 'kitti':
-            create_kitti_submission(model.module,output_path='kitti_submission')
-    quit()
-
-    with torch.no_grad():
         if args.dataset == 'chairs':
             validate_chairs(model.module)
-
         elif args.dataset == 'sintel':
             validate_sintel(model.module)
-
         elif args.dataset == 'kitti':
             validate_kitti(model.module)
-        elif args.dataset == 'kitti2012':
-            validate_kitti2012(model.module)
-
-
+        elif args.dataset == 'sintel_test':
+            create_sintel_submission(model.module)
+        elif args.dataset == 'kitti_test':
+            create_kitti_submission(model.module,output_path='kitti_submission')
