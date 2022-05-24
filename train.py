@@ -449,6 +449,7 @@ def train_phase(model, optimizer, scheduler, stats_logger):
     
     # create and load datasets for validation
     train_set = datasets.fetch_dataloader(args)
+    # KITTI contains non-uniform image size (-> use batch size 1)
     val_set = datasets.KITTI(split='training')
     val_set3 = datasets.FlyingChairs(split='validation')
     val_set2_2 = datasets.MpiSintel(split='training', dstype='final')
@@ -473,7 +474,7 @@ def train_phase(model, optimizer, scheduler, stats_logger):
     # create dataloader from Datset/DistributedSampler, for automated batching/shuffling
     # also responsible for preloading batches to RAM, before sending them to the gpu
     training_data_loader = torch.utils.data.DataLoader(train_set, batch_size=args.batchSize, shuffle=(train_sampler is None), num_workers=args.workers, pin_memory=True, sampler=train_sampler, drop_last=True)
-    val_data_loader = torch.utils.data.DataLoader(val_set, batch_size=args.testBatchSize, shuffle=False, num_workers=args.workers//2, pin_memory=True, sampler=val_sampler)
+    val_data_loader = torch.utils.data.DataLoader(val_set, batch_size=1, shuffle=False, num_workers=args.workers//2, pin_memory=True, sampler=val_sampler)
     val_data_loader2_2 = torch.utils.data.DataLoader(val_set2_2, batch_size=args.testBatchSize, shuffle=False, num_workers=args.workers//2, pin_memory=True, sampler=val_sampler2_2)
     val_data_loader2_1 = torch.utils.data.DataLoader(val_set2_1, batch_size=args.testBatchSize, shuffle=False, num_workers=args.workers//2, pin_memory=True, sampler=val_sampler2_1)
     val_data_loader3 = torch.utils.data.DataLoader(val_set3, batch_size=args.testBatchSize, shuffle=False, num_workers=args.workers//2, pin_memory=True, sampler=val_sampler3)
@@ -519,9 +520,7 @@ def train_phase(model, optimizer, scheduler, stats_logger):
         elif args.stage == 'sintel' or args.stage == 'things':
             val_tuple = val(val_data_loader2_1, model, split='sintel', iters=32, validation_title="Sintel clean training", stats_logger=stats_logger)
             val_tuple = val(val_data_loader2_2, model, split='sintel', iters=32, validation_title="Sintel final training", stats_logger=stats_logger)
-
-            # results in error
-            # loss_tmp = val(val_data_loader, model, split='kitti')
+            val_tuple = val(val_data_loader, model, split='kitti')
         
         # for kitti, valdiate on the kitti training dataset
         elif args.stage == 'kitti':
@@ -651,7 +650,7 @@ def val(testing_data_loader, model, split='sintel', iters=24, validation_title="
     
     model.eval()
     
-    # error in the line below
+    # error in the line below (if images inside batch do not have the same shape)
     # for testing_data_loader of kitti: RuntimeError: Trying to resize storage that is not resizable
     for iteration, batch in enumerate(testing_data_loader):
         

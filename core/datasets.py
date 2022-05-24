@@ -195,6 +195,18 @@ class KITTI(FlowDataset):
 
         if split == 'training':
             self.flow_list = sorted(glob(osp.join(root, 'flow_occ/*_10.png')))
+
+class KITTICropped(KITTI):
+    """
+    crop kitti images to minimum image size (for validation)
+    this is not comparable to results from papers because of missing border pixels
+    """
+    def __getitem__(self, index):
+        ht = 370
+        wd = 1224
+        img1, img2, flow, valid = super().__getitem__(index)
+        return img1[:,:ht,:wd], img2[:,:ht,:wd], flow[:,:ht,:wd], valid[:ht,:wd]
+
 class KITTI2012(FlowDataset):
     def __init__(self, aug_params=None, split='training', root='/export/work/feihu/kitti2012'):
         super(KITTI2012, self).__init__(aug_params, sparse=True)
