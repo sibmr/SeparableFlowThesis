@@ -160,6 +160,16 @@ if __name__ == "__main__":
 
     plt.cla()
     for group in range(ngroups):
+        plt.plot(o1_lr[:, group], linewidth=1+(32/ngroups)*(ngroups-group))
+    plt.savefig("fig_o1.png")
+
+    plt.cla()
+    for group in range(ngroups):
+        plt.plot(o2_lr[:, group], linewidth=1+(32/ngroups)*(ngroups-group))
+    plt.savefig("fig_o2.png")
+
+    plt.cla()
+    for group in range(ngroups):
         plt.plot(o1_lr[1:, group]-o2_lr[1:, group])
     plt.savefig("fig_error.png")
 
