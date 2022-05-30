@@ -173,12 +173,6 @@ class Logger:
 
         self.logger = logging.getLogger("sepflow.stats")
 
-        # create file to store metrics to
-        self.metrics_file = os.path.join(self.log_dir, "metrics.csv")
-        if not os.path.exists(self.metrics_file):
-            with open(self.metrics_file, "w") as file:
-                    file.write("step,lr\n")
-
     def _print_training_status(self, lr):
         metrics_data = [self.running_loss[k]/SUM_FREQ for k in sorted(self.running_loss.keys())]
         training_str = "[{:6d}, {:10.7f}] ".format(self.total_steps+1, lr)
@@ -186,7 +180,7 @@ class Logger:
         
         # print the training status
         print(training_str + metrics_str)
-        self.logger.info(f"{metrics_str} {training_str}")
+        self.logger.info(f"On gpu {args.rank}: {metrics_str} {training_str}")
 
         if self.writer is None:
             self.writer = SummaryWriter(log_dir = self.log_dir)
@@ -198,14 +192,13 @@ class Logger:
     def push(self, metrics, lr):
         self.total_steps += 1
 
+        metrics["lr"] = lr
+
         for key in metrics:
             if key not in self.running_loss:
                 self.running_loss[key] = 0.0
 
             self.running_loss[key] += metrics[key]
-
-        with open(self.metrics_file, "a") as file:
-            file.write("{:6d},{:10.7f}\n".format(self.total_steps, lr))
 
         if self.total_steps % SUM_FREQ == SUM_FREQ-1:
             self._print_training_status(lr)
@@ -264,11 +257,22 @@ def main():
     if not os.path.isdir('checkpoints'):
         os.mkdir('checkpoints')
 
+    # experiment root path
     args.experiment_path = os.path.join('checkpoints', args.experiment_name)
     if not os.path.isdir(args.experiment_path):
         os.mkdir(args.experiment_path)
 
-    args.run_path = os.path.join(args.experiment_path, args.run_name)
+    # path to model save location without ending (.pth, _epoch_x.pth)
+    # e.g. experiment_root/models/sintel
+    args.model_path = os.path.join(args.experiment_path, "models")
+    if not os.path.isdir(args.model_path):
+        os.mkdir(args.experiment_path)
+
+    # path to logs (both .log and tensorboard)
+    # e.g. experiment_root/runs/run_name
+    args.log_path = os.path.join(args.experiment_path, "runs", args.run_name)
+    if not os.path.isdir(args.log_path):
+        os.makedirs(args.log_path, exist_ok=True)
 
     # if there is one gpu, then no distributed training
     if len(args.gpu) == 1:
@@ -281,7 +285,8 @@ def main():
     # probably all processes run on the same node, since dist_url = localhost
     else:
         
-        assert False, "part of multiprocessing executed"
+        # use multiprocessing
+        # assert False, "part of multiprocessing executed"
 
         args.sync_bn = True
         args.distributed = True
@@ -351,7 +356,8 @@ def main_worker(gpu, ngpus_per_node, argss):
     # register current process with process group
     if args.distributed:
         
-        assert False, "part of multiprocessing executed"
+        # use multiprocessing
+        # assert False, "part of multiprocessing executed"
         
         if args.dist_url == "env://" and args.rank == -1:
             args.rank = int(os.environ["RANK"])
@@ -370,7 +376,8 @@ def main_worker(gpu, ngpus_per_node, argss):
     # if there are multiple gpus, DistributedDataParallel is usually faster for any number of nodes
     if args.distributed:
 
-        assert False, "part of multiprocessing executed"
+        # use multiprocessing
+        # assert False, "part of multiprocessing executed"
 
         torch.cuda.set_device(gpu)
         args.batchSize = int(args.batchSize / args.ngpus_per_node)
@@ -415,9 +422,9 @@ def main_worker(gpu, ngpus_per_node, argss):
                 print("=> no checkpoint found at '{}'".format(args.resume))
 
     # create logger
-    stats_logger = Logger(log_dir=args.experiment_path, current_steps=0)
+    stats_logger = Logger(log_dir=args.log_path, current_steps=0)
 
-    filehandler = logging.FileHandler(os.path.join(args.experiment_path, "log.txt"))
+    filehandler = logging.FileHandler(os.path.join(args.log_path, "log.txt"))
     # In the file, write Info or the other things with higer lever than info: error, warning and stuff.
     filehandler.setLevel(logging.INFO)
 
@@ -432,7 +439,7 @@ def main_worker(gpu, ngpus_per_node, argss):
     logger.addHandler(filehandler)
     logger.addHandler(streamhandler)
 
-    logger.info("starting to train")
+    logger.info(f"starting to train on gpu {gpu}")
 
     train_phase(model, optimizer, scheduler, stats_logger)
 
@@ -446,6 +453,8 @@ def train_phase(model, optimizer, scheduler, stats_logger):
         scheduler (torch.optim.lr_scheduler.OneCycleLR): learning rate scheduler to use
         stats_logger (Logger): logger to use
     """
+
+    gpu = args.rank % args.ngpus_per_node
     
     # create and load datasets for validation
     train_set = datasets.fetch_dataloader(args)
@@ -485,26 +494,25 @@ def train_phase(model, optimizer, scheduler, stats_logger):
     total_steps = 0
 
     logger = logging.getLogger("sepflow.train")
-    logger.info(f"Start training run '{args.run_name}'")
+    logger.info(f"Start training run '{args.run_name}' on gpu {gpu}")
+    logger.info(f"args on gpu {gpu}: {vars(args)}")
 
     # epoch-wise training (other than raft)
     for epoch in range(args.start_epoch, args.nEpochs):
         if args.distributed:
-            train_sampler.set_epoch(epoch)
-
-        logger.info(vars(args))
+            train_sampler.set_epoch(epoch)    
 
         logger = logging.getLogger("sepflow.train.epoch")
-        logger.info(f"Start epoch {epoch}")
+        logger.info(f"Start epoch {epoch} on gpu {gpu}")
         
         # train model for one epoch, e.g. numSteps / nEpochs
         total_steps += train(training_data_loader, model, optimizer, scheduler, stats_logger, epoch)
         
-        logger.info(f"Steps: {total_steps}")
+        logger.info(f"Steps on gpu {gpu}: {total_steps}")
 
         # save check point only after the last three epochs
         if main_process(): #and epoch > args.nEpochs - 3:
-            save_checkpoint(args.run_path, epoch,{
+            save_checkpoint(args.model_path, args.run_name, epoch,{
                     'epoch': epoch,
                      'state_dict': model.state_dict(),
                      'optimizer' : optimizer.state_dict(),
@@ -520,7 +528,7 @@ def train_phase(model, optimizer, scheduler, stats_logger):
         elif args.stage == 'sintel' or args.stage == 'things':
             val_tuple = val(val_data_loader2_1, model, split='sintel', iters=32, validation_title="Sintel clean training", stats_logger=stats_logger)
             val_tuple = val(val_data_loader2_2, model, split='sintel', iters=32, validation_title="Sintel final training", stats_logger=stats_logger)
-            val_tuple = val(val_data_loader, model, split='kitti')
+            val_tuple = val(val_data_loader, model, split='kitti', validation_title="KITTI training", stats_logger=stats_logger)
         
         # for kitti, valdiate on the kitti training dataset
         elif args.stage == 'kitti':
@@ -528,11 +536,11 @@ def train_phase(model, optimizer, scheduler, stats_logger):
 
     # if the current process is the main process, then save the model one final time after training
     if main_process():
-        save_checkpoint(args.run_path, args.nEpochs,{
+        save_checkpoint(args.model_path, args.run_name, args.nEpochs,{
                 'state_dict': model.state_dict()
             }, True)
 
-def train(training_data_loader, model, optimizer, scheduler, logger, epoch):
+def train(training_data_loader, model, optimizer, scheduler, stats_logger, epoch):
     """ train the model for one epoch
 
     Args:
@@ -618,12 +626,12 @@ def train(training_data_loader, model, optimizer, scheduler, logger, epoch):
 
             # logging and saving only in main process
             if main_process():
-                logger.push(metrics, scheduler.get_last_lr()[0])
+                stats_logger.push(metrics, scheduler.get_last_lr()[0])
 
                 # every 10000 valid iterations save checkpoint (might not even occurr in an epoch)
                 if valid_iteration % 10000 == 0:
 
-                    save_checkpoint(args.run_path, epoch,{
+                    save_checkpoint(args.model_path, args.run_name, epoch,{
                             'epoch': epoch,
                             'state_dict': model.state_dict(),
                             'optimizer' : optimizer.state_dict(),
@@ -634,8 +642,9 @@ def train(training_data_loader, model, optimizer, scheduler, logger, epoch):
     
     end_time = datetime.now()
     time_diff = end_time - start_time
+    gpu = args.rank % args.ngpus_per_node
     logger = logging.getLogger("sepflow.train.epoch")
-    logger.info(f"Started epoch at {start_time} and took {time_diff}")
+    logger.info(f"Started epoch at {start_time} and took {time_diff} on gpu {gpu}")
 
     return valid_iteration
 
@@ -719,7 +728,8 @@ def val(testing_data_loader, model, split='sintel', iters=24, validation_title="
             # calculates the epoch metrics, no metrics are calculated if not multiprocessing
             if args.multiprocessing_distributed:
                 
-                assert False, "part of multiprocessing executed"
+                # use multiprocessing
+                # assert False, "part of multiprocessing executed"
                 
                 # add 1-tensor for worker counting
                 count = target.new_tensor([1], dtype=torch.long)
@@ -761,43 +771,45 @@ def val(testing_data_loader, model, split='sintel', iters=24, validation_title="
 
     val_tuple = (avg_epoch_error, avg_g1_rate, avg_g3_rate)
 
-    # print epoch validation info, always zero without multiprocessing because of the above
-    if main_process():
-        print("===> Test: Avg. Error: ({:.4f} {:.4f} {:.4f})".format(*val_tuple))
-
     end_time = datetime.now()
     time_diff = end_time - start_time
 
-    logger = logging.getLogger("sepflow.train.epoch")
-    logger.info(f"Started validation at {start_time} and took {time_diff}")
-    logger.info(    f"{validation_title}: "
-                        +   f"epe={val_tuple[0]}, "
-                        +   f"avg(epe>1)={val_tuple[1]}, "
-                        +   f"avg(epe>3)={val_tuple[2]}")
+    # print epoch validation info and log it
+    if main_process():
+        
+        print("===> Test: Avg. Error: ({:.4f} {:.4f} {:.4f})".format(*val_tuple))
+        
+        logger = logging.getLogger("sepflow.train.epoch")
+        logger.info(f"Started validation at {start_time} and took {time_diff}")
+        logger.info(    f"{validation_title}: "
+                            +   f"epe={val_tuple[0]}, "
+                            +   f"avg(epe>1)={val_tuple[1]}, "
+                            +   f"avg(epe>3)={val_tuple[2]}")
 
-    no_space_title = "_".join(validation_title.split(" "))
-    stats_logger.write_dict({
-        f"{no_space_title}_epe" : avg_epoch_error,
-        f"{no_space_title}_1px" : avg_g1_rate,
-        f"{no_space_title}_3px" : avg_g3_rate
-    })
+        no_space_title = "_".join(validation_title.split(" "))
+        stats_logger.write_dict({
+            f"{no_space_title}_epe" : avg_epoch_error,
+            f"{no_space_title}_1px" : avg_g1_rate,
+            f"{no_space_title}_3px" : avg_g3_rate
+        })
 
     return val_tuple
 
-def save_checkpoint(save_path, epoch,state, is_best):
+def save_checkpoint(save_path, run_name, epoch,state, is_best):
     """ simple method to store checkpoint including current epoch, weights, optimizer and lr_scheduler
 
     Args:
         save_path (str): (relative) path to store checkpoint
-        epoch (int): current epoch
+        run_name (str): model name prefix
+        epoch (int): current epoch (used for model name suffix)
         state (dict): dictionary containing weights, optimizer and lr_scheduler
         is_best (bool): whether this model achieves the new best performance
     """
-    filename = save_path + "_epoch_{}.pth".format(epoch)
+    filename = os.path.join(save_path, f"{run_name}_epoch_{epoch}.pth")
     
     # save best model without the epoch tag
     if is_best:
-        filename = save_path + ".pth"
+        filename = os.path.join(save_path, f"{run_name}.pth")
     
     torch.save(state, filename)
     
