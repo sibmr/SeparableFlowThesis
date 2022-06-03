@@ -266,7 +266,7 @@ def main():
     # e.g. experiment_root/models/sintel
     args.model_path = os.path.join(args.experiment_path, "models")
     if not os.path.isdir(args.model_path):
-        os.mkdir(args.experiment_path)
+        os.mkdir(args.model_path)
 
     # path to logs (both .log and tensorboard)
     # e.g. experiment_root/runs/run_name

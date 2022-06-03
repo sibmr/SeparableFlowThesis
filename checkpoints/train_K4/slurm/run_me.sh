@@ -12,7 +12,7 @@ date
 echo ==============================
 
 cd ~/git/thesis/SeparableFlowThesis
-./checkpoints/train_no4dcorr/train.sh
+./checkpoints/train_K4/train.sh
 
 
 echo ==============================

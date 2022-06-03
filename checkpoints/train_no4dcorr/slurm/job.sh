@@ -8,4 +8,4 @@
 #SBATCH --output=/home/bihlmasn/git/thesis/SeparableFlowThesis/checkpoints/train_no4dcorr/slurm_output/job_%j_output.txt
 #SBATCH --error=/home/bihlmasn/git/thesis/SeparableFlowThesis/checkpoints/train_no4dcorr/slurm_output/job_%j_error.txt
 
-/home/bihlmasn/git/thesis/SeparableFlowThesis/scripts/slurm/run_me.sh
+./checkpoints/train_no4dcorr/slurm/run_me.sh
