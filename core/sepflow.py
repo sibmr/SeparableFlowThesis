@@ -21,7 +21,15 @@ except:
         def __exit__(self, *args):
             pass
 class Guidance(nn.Module):
-    def __init__(self, channels=32, refine=False):
+    def __init__(self, channels=32, no_4dcorr_aggregation=False):
+        """ create the guidance subnetwork
+
+        Args:
+            channels (int, optional):   Largest channel number used by the initial hourglass network.
+                                        Defaults to 32.
+            no_4dcorr_aggregation (bool, optional): Whether to compute weights for 4d correlation volume aggregation. 
+                                                    Defaults to False.
+        """
         super(Guidance, self).__init__()
         
         # norm + activation for feature input
@@ -88,12 +96,17 @@ class Guidance(nn.Module):
                                    nn.InstanceNorm2d(inner_channels*2),
                                    nn.ReLU(inplace=True))
         
-        # weights for 4d correlation volume guidance
-        # (batch, self.channels/4, ht, wd) -> (batch, self.wsize, ht, wd)
-        self.weights = nn.Sequential(nn.Conv2d(inner_channels, inner_channels, kernel_size=3, padding=1),
-                                      nn.InstanceNorm2d(inner_channels),
-                                      nn.ReLU(inplace=True),
-                                      nn.Conv2d(inner_channels, self.wsize, kernel_size=3, stride=1, padding=1))
+        # no 4d correlation volume aggregation if argument is true
+        if no_4dcorr_aggregation:
+            self.weights = None
+        # by default, use 4d correlation volume aggregation
+        else:
+            # weights for 4d correlation volume guidance
+            # (batch, self.channels/4, ht, wd) -> (batch, self.wsize, ht, wd)
+            self.weights = nn.Sequential(nn.Conv2d(inner_channels, inner_channels, kernel_size=3, padding=1),
+                                            nn.InstanceNorm2d(inner_channels),
+                                            nn.ReLU(inplace=True),
+                                            nn.Conv2d(inner_channels, self.wsize, kernel_size=3, stride=1, padding=1))
         
         # weight_sg1, weight_sg2, weight_sg3: identical
         # two convolutions, where second has un-activated regression output to module
@@ -139,12 +152,14 @@ class Guidance(nn.Module):
             img (torch.Tensor): image1 with shape (batch, 3, ht, wd)
 
         Returns:
-            Tuple[torch.Tensor, dict, dict]: guidance for 4d/3d correlation volume calculation
+            Tuple[Optional[torch.Tensor], dict, dict]: guidance for 4d/3d correlation volume calculation
                 the Tensor is used for correlation volume aggregation
                 the dictionaries are used for C_u, C_v 3d correlation volume aggregation
                 dictionaries contain keys sg1,sg2,sg3,sg11,sg12 for the 5 different aggregation steps
                 each one-eighth-pixel has 20 weights that are split as follows:
                     4 directions, with 5 weights each for aggregation
+                the weights for 4d cost volume aggregation may be None
+                if this is the case, the guidance parameters for the 4d volume are also None
         """
         
         # reduce img resolution from full to 1/8, adding channels
@@ -163,9 +178,13 @@ class Guidance(nn.Module):
         x = self.conv2(x) + rem
         rem = x
 
-        # guidance for 4d correlation volume computed at an early stage
-        # shape: (batch, self.wsize, ht, wd)
-        guid = self.weights(x)
+        # use 4d correlation volume aggregation if weights network exists
+        if self.weights is None:
+            guid = None
+        else:
+            # guidance for 4d correlation volume computed at an early stage
+            # shape: (batch, self.wsize, ht, wd)
+            guid = self.weights(x)
         
         # another residual style block
         x = self.conv3(x) + rem
@@ -230,7 +249,7 @@ class SepFlow(nn.Module):
         self.fnet = BasicEncoder(output_dim=256, norm_fn='instance', dropout=args.dropout)        
         self.cnet = BasicEncoder(output_dim=hdim+cdim, norm_fn='batch', dropout=args.dropout)
         self.update_block = BasicUpdateBlock(self.args, hidden_dim=hdim)
-        self.guidance = Guidance(channels=256)
+        self.guidance = Guidance(channels=256, no_4d_aggregation=args.no_4d_agg)
         self.cost_agg1 = CostAggregation(in_channel=args.num_corr_channels*args.corr_levels)
         self.cost_agg2 = CostAggregation(in_channel=args.num_corr_channels*args.corr_levels)
 

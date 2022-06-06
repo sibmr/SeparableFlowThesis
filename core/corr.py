@@ -59,11 +59,11 @@ class CorrBlock:
         self.radius = radius
         self.corr_pyramid = []
 
+        # only create NLF if guidance is provided
+        if self.guid is not None:
+            self.nlf = NLF()
         # all pairs correlation
-        self.nlf = NLF()
         corr = self.corr_compute(fmap1, fmap2, guid, reverse=True)
-        #corr = self.nlf(corr, g)
-        #corr = corr.permute(0, 3,4, 1,2)
 
         batch, h1, w1, h2, w2 = corr.shape
         self.shape = corr.shape
@@ -245,6 +245,19 @@ class CorrBlock:
 
     #@staticmethod
     def corr_compute(self, fmap1, fmap2, guid, reverse=True):
+        """ compute the 4d correlation volume
+
+        Args:
+            fmap1 (torch.Tensor): features of image1 of shape (batch, fdim, ht, wd)
+            fmap2 (torch.Tensor): features of image2 of shape (batch, fdim, ht, wd)
+            guid (torch.Tensor):    guidance weights for 4d cost volume aggregation
+                                    if None then 4d cost volume will not be aggregated
+            reverse (bool, optional):   matmul(fmap2, fmap1) if True else matmul(fmap1,fmap2).
+                                        Defaults to True.
+
+        Returns:
+            torch.Tensor: 4d correlation volume of shape (batch, ht, wd, ht, wd)
+        """
         batch, dim, ht, wd = fmap1.shape
         
         # flatten height/width dimension
@@ -257,7 +270,8 @@ class CorrBlock:
             # see non-reverse branch
             corr = torch.matmul(fmap2.transpose(1,2), fmap1) / torch.sqrt(torch.tensor(dim).float())
             corr = corr.view(batch, ht, wd, ht, wd)
-            corr = self.nlf(corr, guid)
+            if guid is not None:
+                corr = self.nlf(corr, guid)
             
             # swapping the fmap1 height/width dimensions back to the front:
             # (batch, ht_fmap2, wd_fmap2, ht_fmap1, wd_fmap1) 
@@ -273,11 +287,13 @@ class CorrBlock:
             # reshape to separate height/width dimensions
             corr = corr.view(batch, ht, wd, ht, wd)
             
-            # nlf seems to somehow combine the 4d correlation volume with guidance 
-            # guidance is a combination of fmap1 and img1
-            # nlf has an up, down, left and right component
-            # shape: (batch, ht, wd, ht, wd)
-            corr = self.nlf(corr, guid)
+            # cost volume is only aggregated if the function received guidance parameters
+            if guid is not None:
+                # nlf seems to somehow combine the 4d correlation volume with guidance 
+                # guidance is a combination of fmap1 and img1
+                # nlf has an up, down, left and right component
+                # shape: (batch, ht, wd, ht, wd)
+                corr = self.nlf(corr, guid)
 
         return corr
 
