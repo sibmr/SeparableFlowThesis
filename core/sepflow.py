@@ -249,7 +249,7 @@ class SepFlow(nn.Module):
         self.fnet = BasicEncoder(output_dim=256, norm_fn='instance', dropout=args.dropout)        
         self.cnet = BasicEncoder(output_dim=hdim+cdim, norm_fn='batch', dropout=args.dropout)
         self.update_block = BasicUpdateBlock(self.args, hidden_dim=hdim)
-        self.guidance = Guidance(channels=256, no_4d_aggregation=args.no_4d_agg)
+        self.guidance = Guidance(channels=256, no_4dcorr_aggregation=args.no_4d_agg)
         self.cost_agg1 = CostAggregation(in_channel=args.num_corr_channels*args.corr_levels)
         self.cost_agg2 = CostAggregation(in_channel=args.num_corr_channels*args.corr_levels)
 

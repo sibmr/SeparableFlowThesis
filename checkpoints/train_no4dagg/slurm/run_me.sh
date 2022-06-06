@@ -11,7 +11,7 @@ echo "start time:"
 date
 echo ==============================
 
-cd ~/git/thesis/SeparableFlowThesis
+#cd ~/git/thesis/SeparableFlowThesis
 ./checkpoints/train_no4dagg/train.sh
 
 

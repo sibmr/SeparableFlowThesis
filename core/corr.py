@@ -60,7 +60,7 @@ class CorrBlock:
         self.corr_pyramid = []
 
         # only create NLF if guidance is provided
-        if self.guid is not None:
+        if guid is not None:
             self.nlf = NLF()
         # all pairs correlation
         corr = self.corr_compute(fmap1, fmap2, guid, reverse=True)
