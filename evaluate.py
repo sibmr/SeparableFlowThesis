@@ -232,6 +232,7 @@ if __name__ == '__main__':
     parser.add_argument('--alternate_corr', action='store_true', help='use efficent correlation implementation')
     parser.add_argument('--no_4d_corr', action='store_true', help='whether to use the 4d correlation volume directly')
     parser.add_argument('--num_corr_channels', type=int, default=2)
+    parser.add_argument('--no_4d_agg', action='store_true', help='whether to use the 4d correlation volume directly')
     args = parser.parse_args()
 
     model = torch.nn.DataParallel(SepFlow(args))
