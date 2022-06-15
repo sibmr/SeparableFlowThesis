@@ -1,4 +1,5 @@
 libs/GANet/build
+libs/MemorySaver/build
 runs
 __pycache__
 log.txt
