@@ -8,6 +8,7 @@ setup(
         CUDAExtension(
             name = 'MemorySaver', 
             sources = ['src/MemorySaver_cuda.cpp', 'src/MemorySaver_kernel.cu',],
+            # NOTE: try 'nvcc':['-O3']
             extra_compile_args={'cxx':[],'nvcc':[]},            
         )
     ],
