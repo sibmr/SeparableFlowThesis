@@ -5,7 +5,7 @@ import torch.nn.functional as F
 
 from update import BasicUpdateBlock, SmallUpdateBlock
 from extractor import BasicEncoder, SmallEncoder
-from corr import CorrBlock, CorrBlock1D
+from corr import CorrBlock, CorrBlock1D, AlternateCorrBlockSepflow
 from cost_agg import CostAggregation
 from utils.utils import bilinear_sampler, coords_grid, upflow8
 
@@ -326,9 +326,12 @@ class SepFlow(nn.Module):
         # guidance: 4 directions, with 5 weights each (summing to 1)
         guid, guid_u, guid_v = self.guidance(fmap1.detach(), image1)
         
-        # correlation now seems to use guidance
-        # corr_fn used for both 4d and 3d cost volume computation
-        corr_fn = CorrBlock(fmap1, fmap2, guid, radius=self.args.corr_radius)
+        if self.args.alternate_corr:
+            corr_fn = AlternateCorrBlockSepflow(fmap1, fmap2, guid, radius=self.args.corr_radius)
+        else:
+            # correlation now seems to use guidance
+            # corr_fn used for both 4d and 3d cost volume computation
+            corr_fn = CorrBlock(fmap1, fmap2, guid, radius=self.args.corr_radius)
 
         # context features calculation:
         # hidden state initialization + context features

@@ -3,6 +3,7 @@ import torch.nn.functional as F
 import torch.nn as nn
 from utils.utils import bilinear_sampler, coords_grid
 from libs.GANet.modules.GANet import NLFMax, NLFIter
+from libs.MemorySaver.functions import ComputeMaxAvgFunction, ComputeSelfCompressionFunction
 
 try:
     import alt_cuda_corr
@@ -195,9 +196,9 @@ class CorrBlock:
             sep_v_lvls.append(sep_v)
         
         # concatenate over all levels
-        # liste -> (batch, corr_channels*levels, wd, ht, wd)
+        # list -> (batch, corr_channels*levels, wd, ht, wd)
         sep_u_lvls = torch.cat(sep_u_lvls, dim=1)
-        # liste -> (batch, corr_channels*levels, ht, ht, wd)
+        # list -> (batch, corr_channels*levels, ht, ht, wd)
         sep_v_lvls = torch.cat(sep_v_lvls, dim=1)
         
         return sep_u_lvls, sep_v_lvls
@@ -327,6 +328,152 @@ class AlternateCorrBlock:
         corr = torch.stack(corr_list, dim=1)
         corr = corr.reshape(B, -1, H, W)
         return corr / torch.sqrt(torch.tensor(dim).float())
+
+class AlternateCorrBlockSepflow:
+    def __init__(self, fmap1, fmap2, guid, num_levels=4, radius=4):
+
+        if guid is not None:
+            raise Exception("Cannot use NLF while not storing the 4d correlation volume")
+
+        self.num_levels = num_levels
+        self.radius = radius
+
+        self.fmap1_l0 = fmap1
+
+        self.pyramid = [fmap2]
+        for i in range(self.num_levels-1):
+            fmap2 = F.avg_pool2d(fmap2, 2, stride=2)
+            self.pyramid.append(fmap2)
+    
+    def separate(self, attention_weights):
+        """ create two separate correlation volumes 
+            in this version, they only consist of the max and avg
+            -> no use of self-adaptive compression, because only attention in vector
+            -> no additional fields aggregated through attention
+
+            they are interpolated on every level to have the original ht/wd dimension
+
+            shape:
+                sep_u: (batch, 2*levels, wd, ht, wd)
+                sep_v: (batch, 2*levels, ht, ht, wd)
+
+            confusing naming scheme between paper and implementation:
+            implementation      paper
+            sep_u           ->  C_v
+            sep_v           ->  C_u
+
+        Args:
+            attention_weights (Tuple[torch.nn.Conv3d,torch.nn.Conv3d]):
+                3d convolution for computing attention weights for corr1 and corr2
+        
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor]: 3d correlation volumes corr1 (sep_u) and corr2 (sep_v)
+        """
+
+        batch, fdim, h1, w1 = self.fmap1_l0.shape
+        h2, w2 = (h1, w1)
+
+        sep_u_lvls = []
+        sep_v_lvls = []
+
+        # for each level of 4d correlation volume pyramid
+        for i in range(self.num_levels):
+            # img1 features at level 0
+            # shape: (batch, ht, wd, fdim)
+            fmap1 = self.fmap1_l0.permute(0,2,3,1).contiguous() / torch.sqrt(torch.tensor(fdim).float())
+            # img2 features at level i
+            # shape: (batch, ht/2**i, wd/2**i, fdim)
+            fmap2 = self.pyramid[i].permute(0,2,3,1).contiguous()
+            
+            # shape: (batch, ht, wd, 2, ht/2**i), (batch, ht, wd, 2, wd/2**i)
+            maxavg_u, maxavg_v = ComputeMaxAvgFunction.apply(fmap1, fmap2)
+            
+            # shape: (batch, ht, wd, 2, ht/2**i) -> (batch, 2, ht/2**i, ht, wd)
+            sep_v = maxavg_u.permute(0,3,4,1,2).contiguous()
+            sep_u = maxavg_v.permute(0,3,4,1,2).contiguous()
+
+
+            if attention_weights is not None:
+
+                attention1, attention2 = attention_weights
+
+                # shape: (batch, 2, wd/2**i, ht, wd) -> (batch, corr_channels-2, wd/2**i, ht, wd)
+                a_u = attention1(sep_u)
+                a_v = attention2(sep_v)
+
+                # apply softmax over v-dimension
+                a_u = a_u.softmax(dim=2)
+                a_v = a_v.softmax(dim=2)
+
+                # shape: (batch, corr_channels-2, wd/2**i, ht, wd) -> (batch, ht, wd, corr_channels-2, wd/2**i)
+                a_u = a_u.permute(0,3,4,1,2).contiguous()
+                a_v = a_v.permute(0,3,4,1,2).contiguous()
+
+                adaptive_corr_u, adaptive_corr_v = ComputeSelfCompressionFunction.apply(fmap1, fmap2, a_u, a_v)
+                
+                # shape: (batch, ht, wd, corr_channels-2, wd/2**i) -> (batch, corr_channels-2, wd/2**i, ht, wd)
+                adaptive_corr_u = adaptive_corr_u.permute(0,3,4,1,2)
+                adaptive_corr_v = adaptive_corr_v.permute(0,3,4,1,2)
+
+                # shape: (batch, corr_channels, ht/2**i, ht, wd)
+                sep_v = torch.cat((sep_v, adaptive_corr_u), dim=1)
+                # shape: (batch, corr_channels, wd/2**i, ht, wd)
+                sep_u = torch.cat((sep_u, adaptive_corr_v), dim=1)
+
+            # TODO: why upsample from reduced level resolution?
+            # maybe they used the largest-level correlation volume to pair the attention with
+            # also, upsampling is the only way the concatenation at the end is possible (otherwise, shape[2] would not match)
+            # (batch, corr_channels, wd/2**i, ht, wd) -> (batch, corr_channels, wd, ht, wd)
+            sep_u = F.interpolate(sep_u, [w2, h1, w1], mode='trilinear', align_corners=True)
+
+            sep_u_lvls.append(sep_u)
+
+            # (batch, corr_channels, ht, ht, wd)
+            sep_v = F.interpolate(sep_v, [h2, h1, w1], mode='trilinear', align_corners=True)
+
+            sep_v_lvls.append(sep_v)
+        
+        # concatenate over all levels
+        # list -> (batch, corr_channels*levels, wd, ht, wd)
+        sep_u_lvls = torch.cat(sep_u_lvls, dim=1)
+        # list -> (batch, corr_channels*levels, ht, ht, wd)
+        sep_v_lvls = torch.cat(sep_v_lvls, dim=1)
+        
+        return sep_u_lvls, sep_v_lvls
+
+    def __call__(self, coords, sep=False, attention_weights=None):       
+        # returns two 3d cost volumes
+        # sep_u: (batch, ht, wd, ht), sep_v: (batch, ht, wd, wd)
+        # very strange behaviour:
+        #   if sep==False:
+        #       return indexed 4d correlation volume
+        #   if sep==True:
+        #       return two NOT indexed 3d correlation volumes
+        #       they need to be indexed in CorrBlock1D still
+        if sep:
+            return self.separate(attention_weights)
+        
+        raise NotImplementedError("Missing the cpp/cuda part for indexing" + 
+            "of the 4d correlation volume without storing it")
+
+        coords = coords.permute(0, 2, 3, 1)
+        B, H, W, _ = coords.shape
+        dim = self.pyramid[0][0].shape[1]
+
+        corr_list = []
+        for i in range(self.num_levels):
+            r = self.radius
+            fmap1_i = self.pyramid[0][0].permute(0, 2, 3, 1).contiguous()
+            fmap2_i = self.pyramid[i][1].permute(0, 2, 3, 1).contiguous()
+
+            coords_i = (coords / 2**i).reshape(B, 1, H, W, 2).contiguous()
+            corr, = alt_cuda_corr.forward(fmap1_i, fmap2_i, coords_i, r)
+            corr_list.append(corr.squeeze(1))
+
+        corr = torch.stack(corr_list, dim=1)
+        corr = corr.reshape(B, -1, H, W)
+        return corr / torch.sqrt(torch.tensor(dim).float())
+        
 
 class CorrBlock1D:
 
