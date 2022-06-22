@@ -7,14 +7,12 @@
 //#include <ATen/ATen.h>
 //#include <ATen/cuda/CUDAContext.h>
 
-#define CUDA_NUM_THREADS 256 
-#define THREADS_PER_BLOCK 64 
-
 #define BLOCK_H 4
 #define BLOCK_W 8
 #define BLOCK_HW BLOCK_H * BLOCK_W
 #define CHANNEL_STRIDE 32
-#define FEATURE_SIZE 192
+#define FEATURE_SIZE 256
+#define FEATURE_SPLIT_SIZE 32
 
 #define DIM0(TENSOR) ((TENSOR).x)
 #define DIM1(TENSOR) ((TENSOR).y)
@@ -47,6 +45,10 @@ __global__ void max_avg_forward_kernel (
   const int W2 = img2_features_lk.size(2); // wd of current lvl: wd/2**i
   const int C = img1_features_l0.size(3); // image feature dimension
 
+  if( C != FEATURE_SIZE ) {
+    printf("Feature size has to be %i but is %i", FEATURE_SIZE, C);
+  }
+
   const int b = blockIdx.x; // current batch
 
   // global starting x/y value for this block
@@ -64,11 +66,11 @@ __global__ void max_avg_forward_kernel (
 
     auto g1_ref = img1_features_l0[b][hc0][wc0];
 
-    // __shared__ scalar_t g1_block[BLOCK_HW][FEATURE_SIZE];
-    // scalar_t * g1 = g1_block[tIdx];
-    // for(int i = 0; i<C; ++i){
-    //   g1[i] = g1_ref[i];
-    // }
+    __shared__ scalar_t g1_block[BLOCK_HW][FEATURE_SIZE];
+    scalar_t * g1 = g1_block[tIdx];
+    for(int i = 0; i<C; ++i){
+      g1[i] = g1_ref[i];
+    }
 
     for (int v = 0; v<W2; ++v){
       auto max_u_ref = max_avg_output_u[b][hc0][wc0][0];
@@ -82,7 +84,7 @@ __global__ void max_avg_forward_kernel (
 
         scalar_t cval = 0;
         for(int i = 0; i<C; ++i){
-          cval += g1_ref[i]*g2_ref[i];  
+          cval += g1[i]*g2_ref[i];  
         }
 
         max_u_ref [u] = max(max_u_ref [u], cval);
@@ -95,6 +97,196 @@ __global__ void max_avg_forward_kernel (
     }
   }
 
+}
+
+/**
+ * @brief Optimized Max-Avg-Kernel that is architecture independent with respect to Shared
+ *        Memory Requirement (15360Bytes)
+ * 
+ * @tparam scalar_t         datatype of the arrays
+ * @param img1_features_l0  image1 features at level 0 of shape (batch, h1, w1, fdim)
+ * @param img2_features_lk  image2 features at level k of shape (batch, h1/2**i, w1/2**i, fdim)
+ * @param max_avg_output_u  output for max/avg values of C_u at level k of shape (batch, h1, w1, h1/2**k)
+ * @param max_avg_output_v  output for max/avg values of C_v at level k of shape (batch, h1, w1, w1/2**k)
+ * @return __global__ 
+ */
+template <typename scalar_t>
+__global__ void max_avg_forward_kernel_optimized_arch_indep (
+  const torch::PackedTensorAccessor32<scalar_t,4,torch::RestrictPtrTraits> img1_features_l0,
+  const torch::PackedTensorAccessor32<scalar_t,4,torch::RestrictPtrTraits> img2_features_lk,
+  torch::PackedTensorAccessor32<scalar_t,5,torch::RestrictPtrTraits> max_avg_output_u,
+  torch::PackedTensorAccessor32<scalar_t,5,torch::RestrictPtrTraits> max_avg_output_v)
+{
+
+  const int B = img1_features_l0.size(0); // batch size
+  const int H1 = img1_features_l0.size(1); // ht of img1
+  const int W1 = img1_features_l0.size(2); // wd of img1
+  const int H2 = img2_features_lk.size(1); // ht of current lvl: ht/2**i
+  const int W2 = img2_features_lk.size(2); // wd of current lvl: wd/2**i
+  const int C = img1_features_l0.size(3); // image feature dimension
+
+  const int b = blockIdx.x; // current batch
+
+  // global starting x/y value for this block
+  const int h0 = blockIdx.y * blockDim.x;   // block_i * BLOCK_H
+  const int w0 = blockIdx.z * blockDim.y;   // block_j * BLOCK_W
+
+  // global current x/y value for this block
+  const int hc0 = h0 + threadIdx.x;
+  const int wc0 = w0 + threadIdx.y;
+
+  const int uBlockLimit = (H2 + BLOCK_H - 1) / BLOCK_H;
+  const int vBlockLimit = (W2 + BLOCK_W - 1) / BLOCK_W;
+
+  const int fBlockLimit = (C + FEATURE_SPLIT_SIZE - 1) / FEATURE_SPLIT_SIZE;
+
+  // The sum should be below 49152 Bytes to be architecture independent
+
+  // 4096 Bytes
+  __shared__ scalar_t corr[BLOCK_H][BLOCK_W][BLOCK_H][BLOCK_W];
+  // 4096 Bytes
+  __shared__ scalar_t fcache1[BLOCK_H][BLOCK_W][FEATURE_SPLIT_SIZE];
+  // 4096 Bytes
+  __shared__ scalar_t fcache2[BLOCK_H][BLOCK_W][FEATURE_SPLIT_SIZE];
+  // 2 * 512 = 1024 Bytes
+  __shared__ scalar_t uMax[BLOCK_H][BLOCK_W][BLOCK_H];
+  __shared__ scalar_t uAvg[BLOCK_H][BLOCK_W][BLOCK_H];
+  // 2 * 1024 = 2048 Bytes
+  __shared__ scalar_t vMax[BLOCK_H][BLOCK_W][BLOCK_W];
+  __shared__ scalar_t vAvg[BLOCK_H][BLOCK_W][BLOCK_W];
+
+    // references into relevant array dimensions for this thread
+    auto g1_ref = img1_features_l0[b][hc0][wc0];
+    auto max_u_global_ref = max_avg_output_u[b][hc0][wc0][0];
+    auto avg_u_global_ref = max_avg_output_u[b][hc0][wc0][1];
+    auto max_v_global_ref = max_avg_output_v[b][hc0][wc0][0];
+    auto avg_v_global_ref = max_avg_output_v[b][hc0][wc0][1];
+
+    // pointers into relevant array dimensions for this thread
+    scalar_t * uMax_ref = uMax [threadIdx.x][threadIdx.y];
+    scalar_t * uAvg_ref = uAvg [threadIdx.x][threadIdx.y];
+    scalar_t * vMax_ref = vMax [threadIdx.x][threadIdx.y];
+    scalar_t * vAvg_ref = vAvg [threadIdx.x][threadIdx.y];
+
+  
+  bool withinBoundsHc0Wc0 = within_bounds(hc0, wc0, H1, W1);
+
+  for (int v_block = 0; v_block < vBlockLimit; ++v_block){
+
+    const int v_offset = v_block * BLOCK_W;
+
+    // load v values
+    for (int v_inc = 0; v_inc < BLOCK_W; ++v_inc){
+      if(withinBoundsHc0Wc0 && v_offset + v_inc < W2){
+        vMax_ref [v_inc] = max_v_global_ref[v_offset + v_inc];
+        vAvg_ref [v_inc] = avg_v_global_ref[v_offset + v_inc];
+      }else{
+        vMax_ref [v_inc] = -INFINITY;
+        vAvg_ref [v_inc] = 0;
+      }
+    }
+
+    for (int u_block = 0; u_block < uBlockLimit; ++u_block){
+
+      const int u_offset = u_block * BLOCK_H;
+
+      // printf("%i %i   %i %i\n", hc0, wc0, u_block, v_block);
+
+      // reset correlation volume at the start of the uv-block (each thread resets one part)
+      for (int i = 0; i < BLOCK_H; ++i){
+        for (int j = 0; j < BLOCK_W; ++j){
+          corr[threadIdx.x][threadIdx.y][i][j] = 0.0;
+        }
+      }
+
+      __syncthreads();
+
+      // compute block correlation volume in splits
+      for (int f_block = 0; f_block < fBlockLimit; ++f_block){
+        
+        int f_offset = f_block*FEATURE_SPLIT_SIZE;
+        
+        // load fmap1 split into shared memory (every thread is responsible for one)
+        scalar_t * fcache1_ptr = fcache1[threadIdx.x][threadIdx.y];
+        for(int i = 0; i<FEATURE_SPLIT_SIZE; ++i){
+          if(withinBoundsHc0Wc0 && f_offset+i < C){
+            fcache1_ptr[i] = g1_ref[f_offset+i];
+          }else{
+            fcache1_ptr[i] = 0;
+          }
+        }
+
+        // load fmap2 split into shared memory (every thread is responsible for one)
+        auto g2_ref = img2_features_lk[b][u_offset + threadIdx.x][v_offset + threadIdx.y];
+        scalar_t * fcache2_ptr = fcache2[threadIdx.x][threadIdx.y];
+        for(int i = 0; i<FEATURE_SPLIT_SIZE; ++i){
+          if(within_bounds(u_offset+threadIdx.x, v_offset+threadIdx.y, H2, W2) && f_offset+i < C){
+            fcache2_ptr[i] = g2_ref[f_offset+i];
+          }else{
+            fcache2_ptr[i] = 0.0;
+          }
+        }
+
+        // sync to prevent threads from using last iterations fcache2 values for corr computation
+        __syncthreads();
+
+        // accumulate block correlation volume
+        for (int u_inc = 0; u_inc < BLOCK_H; ++u_inc){
+          for (int v_inc = 0; v_inc < BLOCK_W; ++v_inc){
+            for(int f_inc = 0; f_inc<FEATURE_SPLIT_SIZE; ++f_inc){
+              corr[threadIdx.x][threadIdx.y][u_inc][v_inc] += fcache1[threadIdx.x][threadIdx.y][f_inc]*fcache2[u_inc][v_inc][f_inc];
+            }
+          }
+        }
+
+        // sync to prevent threads from re-writing fcache2 before all threads are done with it
+        __syncthreads();
+      }
+
+      // now corr holds the values of the correlation volume for (block_u, block_v)
+
+      // load u values from global memory to shared memory
+      for (int u_inc = 0; u_inc < BLOCK_H; ++u_inc){
+        if(withinBoundsHc0Wc0 && u_offset+u_inc < H2){
+          uMax_ref [u_inc] = max_u_global_ref[u_offset + u_inc];
+          uAvg_ref [u_inc] = avg_u_global_ref[u_offset + u_inc];
+        }else{
+          uMax_ref [u_inc] = -INFINITY;
+          uAvg_ref [u_inc] = 0;
+        }
+      }
+
+      // compute umax,uavg,vmax,vavg
+      for (int u_inc = 0; u_inc < BLOCK_H; ++u_inc){
+        for (int v_inc = 0; v_inc < BLOCK_W; ++v_inc){
+          scalar_t cval = corr[threadIdx.x][threadIdx.y][u_inc][v_inc];
+          uMax_ref [u_inc] = max(uMax_ref [u_inc], cval);
+          uAvg_ref [u_inc] += cval / W2;
+
+          vMax_ref [v_inc] = max(vMax_ref [v_inc], cval);
+          vAvg_ref [v_inc] += cval;
+        }
+      }
+
+      // store u values into global memory from shared memory
+      for (int u_inc = 0; u_inc < BLOCK_H; ++u_inc){
+        if(withinBoundsHc0Wc0 && u_offset + u_inc < H2){
+          max_u_global_ref[u_offset + u_inc] = uMax_ref [u_inc];
+          avg_u_global_ref[u_offset + u_inc] = uAvg_ref [u_inc];
+        }
+      }
+
+    }
+
+    // store v values into global memory from shared memory
+    for (int v_inc = 0; v_inc < BLOCK_W; ++v_inc){
+      if(withinBoundsHc0Wc0 && v_offset + v_inc < W2){
+        max_v_global_ref[v_offset + v_inc] = vMax_ref [v_inc];
+        avg_v_global_ref[v_offset + v_inc] = vAvg_ref [v_inc] / H2;
+      }
+    }
+
+  }
 }
 
 template <typename scalar_t>
@@ -293,14 +485,26 @@ std::vector<torch::Tensor> max_avg_cuda_forward (
   // number of threads per block
   // shape: (4,8)
   const dim3 threads(BLOCK_H, BLOCK_W);
-  AT_DISPATCH_FLOATING_TYPES(img1_features_l0.type(), "max_avg_cuda_forward", ([&] {
-    max_avg_forward_kernel_unoptimized <scalar_t> <<< blocks, threads >>> (
-      img1_features_l0.packed_accessor32<scalar_t,4,torch::RestrictPtrTraits>(),
-      img2_features_lk.packed_accessor32<scalar_t,4,torch::RestrictPtrTraits>(),
-      max_avg_output_u.packed_accessor32<scalar_t,5,torch::RestrictPtrTraits>(),
-      max_avg_output_v.packed_accessor32<scalar_t,5,torch::RestrictPtrTraits>()
-    );
-  }));
+  
+  // AT_DISPATCH_FLOATING_TYPES(img1_features_l0.type(), "max_avg_cuda_forward", ([&] {
+  //   max_avg_forward_kernel <scalar_t> <<< blocks, threads >>> (
+  //     img1_features_l0.packed_accessor32<scalar_t,4,torch::RestrictPtrTraits>(),
+  //     img2_features_lk.packed_accessor32<scalar_t,4,torch::RestrictPtrTraits>(),
+  //     max_avg_output_u.packed_accessor32<scalar_t,5,torch::RestrictPtrTraits>(),
+  //     max_avg_output_v.packed_accessor32<scalar_t,5,torch::RestrictPtrTraits>()
+  //   );
+  // }));
+
+  
+  max_avg_forward_kernel_unoptimized <float> <<< blocks, threads >>> (
+    img1_features_l0.packed_accessor32<float,4,torch::RestrictPtrTraits>(),
+    img2_features_lk.packed_accessor32<float,4,torch::RestrictPtrTraits>(),
+    max_avg_output_u.packed_accessor32<float,5,torch::RestrictPtrTraits>(),
+    max_avg_output_v.packed_accessor32<float,5,torch::RestrictPtrTraits>()
+  );
+
+  // cudaError_t err = cudaThreadSynchronize();
+  // printf("Run kernel: %s\n", cudaGetErrorString(err));
 
   return {max_avg_output_u, max_avg_output_v};
 }
@@ -336,17 +540,27 @@ std::vector<torch::Tensor> compression_cuda_forward (
 
   cudaDeviceSetLimit(cudaLimitMallocHeapSize, 128*1024*1024);
 
-  AT_DISPATCH_FLOATING_TYPES(img1_features_l0.type(), "compression_cuda_forward", ([&] {
-    compression_forward_kernel_unoptimized <scalar_t> <<< blocks, threads >>> (
-      img1_features_l0.packed_accessor32<scalar_t,4,torch::RestrictPtrTraits>(),
-      img2_features_lk.packed_accessor32<scalar_t,4,torch::RestrictPtrTraits>(),
-      attention_weights_u.packed_accessor32<scalar_t,5,torch::RestrictPtrTraits>(),
-      attention_weights_v.packed_accessor32<scalar_t,5,torch::RestrictPtrTraits>(),
-      compression_output_u.packed_accessor32<scalar_t,5,torch::RestrictPtrTraits>(),
-      compression_output_v.packed_accessor32<scalar_t,5,torch::RestrictPtrTraits>()
-    );
-  }));
+  // AT_DISPATCH_FLOATING_TYPES(img1_features_l0.type(), "compression_cuda_forward", ([&] {
+  //   compression_forward_kernel_unoptimized <scalar_t> <<< blocks, threads >>> (
+  //     img1_features_l0.packed_accessor32<scalar_t,4,torch::RestrictPtrTraits>(),
+  //     img2_features_lk.packed_accessor32<scalar_t,4,torch::RestrictPtrTraits>(),
+  //     attention_weights_u.packed_accessor32<scalar_t,5,torch::RestrictPtrTraits>(),
+  //     attention_weights_v.packed_accessor32<scalar_t,5,torch::RestrictPtrTraits>(),
+  //     compression_output_u.packed_accessor32<scalar_t,5,torch::RestrictPtrTraits>(),
+  //     compression_output_v.packed_accessor32<scalar_t,5,torch::RestrictPtrTraits>()
+  //   );
+  // }));
 
+  
+  compression_forward_kernel_unoptimized <float> <<< blocks, threads >>> (
+    img1_features_l0.packed_accessor32<float,4,torch::RestrictPtrTraits>(),
+    img2_features_lk.packed_accessor32<float,4,torch::RestrictPtrTraits>(),
+    attention_weights_u.packed_accessor32<float,5,torch::RestrictPtrTraits>(),
+    attention_weights_v.packed_accessor32<float,5,torch::RestrictPtrTraits>(),
+    compression_output_u.packed_accessor32<float,5,torch::RestrictPtrTraits>(),
+    compression_output_v.packed_accessor32<float,5,torch::RestrictPtrTraits>()
+  );
+  
   return {compression_output_u, compression_output_v};
 }
 
