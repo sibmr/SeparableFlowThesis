@@ -3,9 +3,6 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <stdio.h>
-//#include <torch/serialize/tensor.h>
-//#include <ATen/ATen.h>
-//#include <ATen/cuda/CUDAContext.h>
 
 #define BLOCK_H 4
 #define BLOCK_W 8
@@ -13,6 +10,9 @@
 #define CHANNEL_STRIDE 32
 #define FEATURE_SIZE 256
 #define FEATURE_SPLIT_SIZE 32
+
+// define number of self-adaptive compression to be 2
+#define K_VAL 2
 
 #define DIM0(TENSOR) ((TENSOR).x)
 #define DIM1(TENSOR) ((TENSOR).y)
@@ -131,13 +131,14 @@ __global__ void max_avg_forward_kernel_optimized_arch_indep (
   const int h0 = blockIdx.y * blockDim.x;   // block_i * BLOCK_H
   const int w0 = blockIdx.z * blockDim.y;   // block_j * BLOCK_W
 
-  // global current x/y value for this block
+  // global current x/y value for this thread (pixel in img1)
   const int hc0 = h0 + threadIdx.x;
   const int wc0 = w0 + threadIdx.y;
 
+  // number of "blocks" in u,v and feature direction
+  // not cuda blocks, but loaded into shared memory at the same time
   const int uBlockLimit = (H2 + BLOCK_H - 1) / BLOCK_H;
   const int vBlockLimit = (W2 + BLOCK_W - 1) / BLOCK_W;
-
   const int fBlockLimit = (C + FEATURE_SPLIT_SIZE - 1) / FEATURE_SPLIT_SIZE;
 
   // The sum should be below 49152 Bytes to be architecture independent
@@ -155,19 +156,19 @@ __global__ void max_avg_forward_kernel_optimized_arch_indep (
   __shared__ scalar_t vMax[BLOCK_H][BLOCK_W][BLOCK_W];
   __shared__ scalar_t vAvg[BLOCK_H][BLOCK_W][BLOCK_W];
 
-    // references into relevant array dimensions for this thread
-    auto g1_ref = img1_features_l0[b][hc0][wc0];
-    auto max_u_global_ref = max_avg_output_u[b][hc0][wc0][0];
-    auto avg_u_global_ref = max_avg_output_u[b][hc0][wc0][1];
-    auto max_v_global_ref = max_avg_output_v[b][hc0][wc0][0];
-    auto avg_v_global_ref = max_avg_output_v[b][hc0][wc0][1];
+  // references into relevant array dimensions for this thread
+  auto g1_ref = img1_features_l0[b][hc0][wc0];
+  auto max_u_global_ref = max_avg_output_u[b][hc0][wc0][0];
+  auto avg_u_global_ref = max_avg_output_u[b][hc0][wc0][1];
+  auto max_v_global_ref = max_avg_output_v[b][hc0][wc0][0];
+  auto avg_v_global_ref = max_avg_output_v[b][hc0][wc0][1];
 
-    // pointers into relevant array dimensions for this thread
-    scalar_t * uMax_ref = uMax [threadIdx.x][threadIdx.y];
-    scalar_t * uAvg_ref = uAvg [threadIdx.x][threadIdx.y];
-    scalar_t * vMax_ref = vMax [threadIdx.x][threadIdx.y];
-    scalar_t * vAvg_ref = vAvg [threadIdx.x][threadIdx.y];
-
+  // pointers into relevant array dimensions for this thread
+  scalar_t (* corr_ref) [BLOCK_W] = corr [threadIdx.x][threadIdx.y];
+  scalar_t * uMax_ref = uMax [threadIdx.x][threadIdx.y];
+  scalar_t * uAvg_ref = uAvg [threadIdx.x][threadIdx.y];
+  scalar_t * vMax_ref = vMax [threadIdx.x][threadIdx.y];
+  scalar_t * vAvg_ref = vAvg [threadIdx.x][threadIdx.y];
   
   bool withinBoundsHc0Wc0 = within_bounds(hc0, wc0, H1, W1);
 
@@ -195,7 +196,7 @@ __global__ void max_avg_forward_kernel_optimized_arch_indep (
       // reset correlation volume at the start of the uv-block (each thread resets one part)
       for (int i = 0; i < BLOCK_H; ++i){
         for (int j = 0; j < BLOCK_W; ++j){
-          corr[threadIdx.x][threadIdx.y][i][j] = 0.0;
+          corr_ref[i][j] = 0.0;
         }
       }
 
@@ -234,7 +235,7 @@ __global__ void max_avg_forward_kernel_optimized_arch_indep (
         for (int u_inc = 0; u_inc < BLOCK_H; ++u_inc){
           for (int v_inc = 0; v_inc < BLOCK_W; ++v_inc){
             for(int f_inc = 0; f_inc<FEATURE_SPLIT_SIZE; ++f_inc){
-              corr[threadIdx.x][threadIdx.y][u_inc][v_inc] += fcache1[threadIdx.x][threadIdx.y][f_inc]*fcache2[u_inc][v_inc][f_inc];
+              corr_ref[u_inc][v_inc] += fcache1[threadIdx.x][threadIdx.y][f_inc]*fcache2[u_inc][v_inc][f_inc];
             }
           }
         }
@@ -259,7 +260,7 @@ __global__ void max_avg_forward_kernel_optimized_arch_indep (
       // compute umax,uavg,vmax,vavg
       for (int u_inc = 0; u_inc < BLOCK_H; ++u_inc){
         for (int v_inc = 0; v_inc < BLOCK_W; ++v_inc){
-          scalar_t cval = corr[threadIdx.x][threadIdx.y][u_inc][v_inc];
+          scalar_t cval = corr_ref[u_inc][v_inc];
           uMax_ref [u_inc] = max(uMax_ref [u_inc], cval);
           uAvg_ref [u_inc] += cval / W2;
 
@@ -286,6 +287,228 @@ __global__ void max_avg_forward_kernel_optimized_arch_indep (
       }
     }
 
+  }
+}
+
+
+/**
+ * @brief Optimized Compression-Kernel that is architecture independent with respect to Shared
+ *        Memory Requirement (18432 Bytes for CONST_K = 2)
+ * 
+ * @tparam scalar_t             datatype of the arrays
+ * @tparam CONST_K              number of correlation features
+ * @param img1_features_l0      image1 features at level 0 of shape (batch, h1, wd, fdim)
+ * @param img2_features_lk      image2 features at level k of shape (batch, h1/2**i, w1/2**i, fdim)
+ * @param attention_weights_u   attention weights for compression of shape (batch, h1, wd, K-2, w1/2**i)
+ * @param attention_weights_v   attention weights for compression of shape (batch, h1, wd, K-2, h1/2**i)
+ * @param compression_output_u  output for compression values of C_u at level k of shape (batch, h1, w1, K-2, h1/2**k)
+ * @param compression_output_v  output for compression values of C_v at level k of shape (batch, h1, w1, K-2, w1/2**k)
+ * @return __global__ 
+ */
+template <typename scalar_t, int CONST_K>
+__global__ void compression_forward_kernel_optimized_arch_indep (
+  const torch::PackedTensorAccessor32<scalar_t,4,torch::RestrictPtrTraits> img1_features_l0,
+  const torch::PackedTensorAccessor32<scalar_t,4,torch::RestrictPtrTraits> img2_features_lk,
+  const torch::PackedTensorAccessor32<scalar_t,5,torch::RestrictPtrTraits> attention_weights_u,
+  const torch::PackedTensorAccessor32<scalar_t,5,torch::RestrictPtrTraits> attention_weights_v,
+  torch::PackedTensorAccessor32<scalar_t,5,torch::RestrictPtrTraits> compression_output_u,
+  torch::PackedTensorAccessor32<scalar_t,5,torch::RestrictPtrTraits> compression_output_v)
+{
+
+  const int B = img1_features_l0.size(0); // batch size
+  const int H1 = img1_features_l0.size(1); // ht of img1
+  const int W1 = img1_features_l0.size(2); // wd of img1
+  const int H2 = img2_features_lk.size(1); // ht of current lvl: ht/2**i
+  const int W2 = img2_features_lk.size(2); // wd of current lvl: wd/2**i
+  const int C = img1_features_l0.size(3); // image feature dimension
+  const int K = attention_weights_u.size(3); // K-2 self-compressed features
+
+  const int b = blockIdx.x; // current batch
+
+  // global starting x/y value for this block
+  const int h0 = blockIdx.y * blockDim.x;   // block_i * BLOCK_H
+  const int w0 = blockIdx.z * blockDim.y;   // block_j * BLOCK_W
+
+  // global current x/y value for this block
+  const int hc0 = h0 + threadIdx.x;
+  const int wc0 = w0 + threadIdx.y;
+
+  const int uBlockLimit = (H2 + BLOCK_H - 1) / BLOCK_H;
+  const int vBlockLimit = (W2 + BLOCK_W - 1) / BLOCK_W;
+
+  const int fBlockLimit = (C + FEATURE_SPLIT_SIZE - 1) / FEATURE_SPLIT_SIZE;
+
+  // The sum should be below 49152 Bytes to be architecture independent
+  // The sum is 12288 + 3072*CONST_K
+  // For K=2: 18432 Bytes
+
+  // 4096 Bytes
+  __shared__ scalar_t corr[BLOCK_H][BLOCK_W][BLOCK_H][BLOCK_W];
+  // 4096 Bytes
+  __shared__ scalar_t fcache1[BLOCK_H][BLOCK_W][FEATURE_SPLIT_SIZE];
+  // 4096 Bytes
+  __shared__ scalar_t fcache2[BLOCK_H][BLOCK_W][FEATURE_SPLIT_SIZE];
+  
+  // (512 + 1024) * 2 * CONST_K Bytes
+  __shared__ scalar_t uAtt[BLOCK_H][BLOCK_W][CONST_K][BLOCK_W];
+  __shared__ scalar_t vAtt[BLOCK_H][BLOCK_W][CONST_K][BLOCK_H];
+  __shared__ scalar_t uCom[BLOCK_H][BLOCK_W][CONST_K][BLOCK_H];
+  __shared__ scalar_t vCom[BLOCK_H][BLOCK_W][CONST_K][BLOCK_W];
+
+  // references into relevant array dimensions for this thread
+  auto g1_ref = img1_features_l0[b][hc0][wc0];
+  auto attention_u_global_ref = attention_weights_u[b][hc0][wc0];
+  auto attention_v_global_ref = attention_weights_v[b][hc0][wc0];
+  auto compressed_u_global_ref = compression_output_u[b][hc0][wc0];
+  auto compressed_v_global_ref = compression_output_v[b][hc0][wc0];
+  
+  // pointers into relevant array dimensions for this thread
+  scalar_t (* corr_ref) [BLOCK_W] = corr [threadIdx.x][threadIdx.y];
+  scalar_t (* uAtt_ref) [BLOCK_W] = uAtt [threadIdx.x][threadIdx.y];
+  scalar_t (* vAtt_ref) [BLOCK_H] = vAtt [threadIdx.x][threadIdx.y];
+  scalar_t (* uCom_ref) [BLOCK_H] = uCom [threadIdx.x][threadIdx.y];
+  scalar_t (* vCom_ref) [BLOCK_W] = vCom [threadIdx.x][threadIdx.y];
+  
+  bool withinBoundsHc0Wc0 = within_bounds(hc0, wc0, H1, W1);
+
+  for (int v_block = 0; v_block < vBlockLimit; ++v_block){
+
+    const int v_offset = v_block * BLOCK_W;
+
+    // load v values
+    for(int k_inc = 0; k_inc < CONST_K; ++k_inc){
+      auto k_attention_u_global_ref = attention_u_global_ref[k_inc];
+      auto k_compressed_v_global_ref = compressed_v_global_ref[k_inc];
+      scalar_t * k_uAtt_ref = uAtt_ref[k_inc];
+      scalar_t * k_vCom_ref = vCom_ref[k_inc];
+      for (int v_inc = 0; v_inc < BLOCK_W; ++v_inc){
+        if(withinBoundsHc0Wc0 && v_offset + v_inc < W2){
+          k_uAtt_ref [v_inc] = k_attention_u_global_ref[v_offset + v_inc];
+          k_vCom_ref [v_inc] = k_compressed_v_global_ref[v_offset + v_inc];
+        }else{
+          k_uAtt_ref [v_inc] = 0;
+          k_vCom_ref [v_inc] = 0;
+        }
+      }
+    }
+
+    for (int u_block = 0; u_block < uBlockLimit; ++u_block){
+
+      const int u_offset = u_block * BLOCK_H;
+
+      // printf("%i %i   %i %i\n", hc0, wc0, u_block, v_block);
+
+      // reset correlation volume at the start of the uv-block (each thread resets one part)
+      for (int i = 0; i < BLOCK_H; ++i){
+        for (int j = 0; j < BLOCK_W; ++j){
+          corr_ref[i][j] = 0.0;
+        }
+      }
+
+      __syncthreads();
+
+      // compute block correlation volume in splits
+      for (int f_block = 0; f_block < fBlockLimit; ++f_block){
+        
+        int f_offset = f_block*FEATURE_SPLIT_SIZE;
+        
+        // load fmap1 split into shared memory (every thread is responsible for one)
+        scalar_t * fcache1_ptr = fcache1[threadIdx.x][threadIdx.y];
+        for(int i = 0; i<FEATURE_SPLIT_SIZE; ++i){
+          if(withinBoundsHc0Wc0 && f_offset+i < C){
+            fcache1_ptr[i] = g1_ref[f_offset+i];
+          }else{
+            fcache1_ptr[i] = 0.0;
+          }
+        }
+
+        // load fmap2 split into shared memory (every thread is responsible for one)
+        auto g2_ref = img2_features_lk[b][u_offset + threadIdx.x][v_offset + threadIdx.y];
+        scalar_t * fcache2_ptr = fcache2[threadIdx.x][threadIdx.y];
+        for(int i = 0; i<FEATURE_SPLIT_SIZE; ++i){
+          if(within_bounds(u_offset+threadIdx.x, v_offset+threadIdx.y, H2, W2) && f_offset+i < C){
+            fcache2_ptr[i] = g2_ref[f_offset+i];
+          }else{
+            fcache2_ptr[i] = 0.0;
+          }
+        }
+
+        // sync to prevent threads from using last iterations fcache2 values for corr computation
+        __syncthreads();
+
+        // accumulate block correlation volume
+        for (int u_inc = 0; u_inc < BLOCK_H; ++u_inc){
+          for (int v_inc = 0; v_inc < BLOCK_W; ++v_inc){
+            for(int f_inc = 0; f_inc<FEATURE_SPLIT_SIZE; ++f_inc){
+              corr_ref[u_inc][v_inc] += fcache1[threadIdx.x][threadIdx.y][f_inc]*fcache2[u_inc][v_inc][f_inc];
+            }
+          }
+        }
+
+        // sync to prevent threads from re-writing fcache2 before all threads are done with it
+        __syncthreads();
+      }
+
+      // now corr holds the values of the correlation volume for (block_u, block_v)
+
+      // load u values from global memory to shared memory
+      for(int k_inc = 0; k_inc < CONST_K; ++k_inc){
+        auto k_attention_v_global_ref = attention_v_global_ref[k_inc];
+        auto k_compressed_u_global_ref = compressed_u_global_ref[k_inc];
+        scalar_t * k_vAtt_ref = vAtt_ref[k_inc];
+        scalar_t * k_uCom_ref = uCom_ref[k_inc];
+        for (int u_inc = 0; u_inc < BLOCK_H; ++u_inc){
+          if(withinBoundsHc0Wc0 && u_offset+u_inc < H2){
+            k_vAtt_ref [u_inc] = k_attention_v_global_ref[u_offset + u_inc];
+            k_uCom_ref [u_inc] = k_compressed_u_global_ref[u_offset + u_inc];
+          }else{
+            k_vAtt_ref [u_inc] = 0;
+            k_uCom_ref [u_inc] = 0;
+          }
+        }
+      }
+
+      // compute compressed u and v values for each self-adaptive correlation feature channel
+      for(int k_inc = 0; k_inc < CONST_K; ++k_inc){
+        // create refs for current k value
+        scalar_t * k_uAtt_ref = uAtt_ref[k_inc];
+        scalar_t * k_uCom_ref = uCom_ref[k_inc];
+        scalar_t * k_vAtt_ref = vAtt_ref[k_inc];
+        scalar_t * k_vCom_ref = vCom_ref[k_inc];
+        for (int u_inc = 0; u_inc < BLOCK_H; ++u_inc){
+          for (int v_inc = 0; v_inc < BLOCK_W; ++v_inc){
+            scalar_t cval = corr_ref[u_inc][v_inc];
+
+            k_uCom_ref [u_inc] += cval * k_uAtt_ref [v_inc];
+            k_vCom_ref [v_inc] += cval * k_vAtt_ref [u_inc];
+          }
+        }
+      }
+
+      // store u values into global memory from shared memory
+      for(int k_inc = 0; k_inc < CONST_K; ++k_inc){
+        auto k_compressed_u_global_ref = compressed_u_global_ref[k_inc];
+        scalar_t * k_uCom_ref = uCom_ref[k_inc];
+        for (int u_inc = 0; u_inc < BLOCK_H; ++u_inc){
+          if(withinBoundsHc0Wc0 && u_offset + u_inc < H2){
+            k_compressed_u_global_ref[u_offset + u_inc] = k_uCom_ref [u_inc];
+          }
+        }
+      }
+
+    }
+
+    // store v values into global memory from shared memory
+    for(int k_inc = 0; k_inc < CONST_K; ++k_inc){
+      auto k_compressed_v_global_ref = compressed_v_global_ref[k_inc];
+      scalar_t * k_vCom_ref = vCom_ref[k_inc];
+      for (int v_inc = 0; v_inc < BLOCK_W; ++v_inc){
+        if(withinBoundsHc0Wc0 && v_offset + v_inc < W2){
+          k_compressed_v_global_ref [v_offset + v_inc] = k_vCom_ref [v_inc];
+        }
+      }
+    }
+  
   }
 }
 
@@ -399,8 +622,9 @@ __global__ void compression_forward_kernel_unoptimized (
       }
     }
   }
-
 }
+
+
 
 template <typename scalar_t>
 __global__ void testkernel (
@@ -496,7 +720,7 @@ std::vector<torch::Tensor> max_avg_cuda_forward (
   // }));
 
   
-  max_avg_forward_kernel_unoptimized <float> <<< blocks, threads >>> (
+  max_avg_forward_kernel_optimized_arch_indep <float> <<< blocks, threads >>> (
     img1_features_l0.packed_accessor32<float,4,torch::RestrictPtrTraits>(),
     img2_features_lk.packed_accessor32<float,4,torch::RestrictPtrTraits>(),
     max_avg_output_u.packed_accessor32<float,5,torch::RestrictPtrTraits>(),
@@ -552,7 +776,8 @@ std::vector<torch::Tensor> compression_cuda_forward (
   // }));
 
   
-  compression_forward_kernel_unoptimized <float> <<< blocks, threads >>> (
+  // compression_forward_kernel_unoptimized <float> <<< blocks, threads >>> (
+  compression_forward_kernel_optimized_arch_indep <float, K_VAL> <<< blocks, threads >>> (
     img1_features_l0.packed_accessor32<float,4,torch::RestrictPtrTraits>(),
     img2_features_lk.packed_accessor32<float,4,torch::RestrictPtrTraits>(),
     attention_weights_u.packed_accessor32<float,5,torch::RestrictPtrTraits>(),
@@ -560,6 +785,9 @@ std::vector<torch::Tensor> compression_cuda_forward (
     compression_output_u.packed_accessor32<float,5,torch::RestrictPtrTraits>(),
     compression_output_v.packed_accessor32<float,5,torch::RestrictPtrTraits>()
   );
+
+  // cudaError_t err = cudaThreadSynchronize();
+  // printf("Run kernel: %s\n", cudaGetErrorString(err));
   
   return {compression_output_u, compression_output_v};
 }

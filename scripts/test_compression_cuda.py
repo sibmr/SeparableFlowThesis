@@ -186,15 +186,20 @@ def test_example_same_size(batch_size, ht, wd, fdim, corr_channels):
         img1_features_l0, img2_features_l0,
         attention_weights_u, attention_weights_v)
 
-    shape_diff = {
-        "compression_u" : tensor_shape_eq(compression_u, target_compression_u),
-        "compression_v" : tensor_shape_eq(compression_v, target_compression_v),
-    }   
-    value_diff = {
-        "compression_u" : tensor_value_eq(compression_u, target_compression_u),
-        "compression_v" : tensor_value_eq(compression_v, target_compression_v),
-    }
-
+    shape_diff = {}
+    for k in range(corr_channels-2):
+        shape_diff.update({
+            f"compression_u:{k}" : tensor_shape_eq(compression_u[:,k], target_compression_u[:,k]),
+            f"compression_v:{k}" : tensor_shape_eq(compression_v[:,k], target_compression_v[:,k]),
+        })
+    
+    value_diff = {}
+    for k in range(corr_channels-2):
+        value_diff.update({
+            f"compression_u:{k}" : tensor_value_eq(compression_u[:,k], target_compression_u[:,k]),
+            f"compression_v:{k}" : tensor_value_eq(compression_v[:,k], target_compression_v[:,k]),
+        })
+    
     return shape_diff, value_diff
 
 def test_example_structured():
@@ -228,6 +233,8 @@ def test_example_structured():
 
     print(compression_u)
     print(target_compression_u)
+    print(compression_v)
+    print(target_compression_v)
 
 def test_example_diff_size(batch_size, ht, wd, fdim, corr_channels, level):
     # shape: (batch, ht, wd, fdim)
@@ -262,14 +269,18 @@ def test_example_diff_size(batch_size, ht, wd, fdim, corr_channels, level):
         img1_features_l0, img2_features_lk,
         attention_weights_u, attention_weights_v)
 
-    shape_diff = {
-        "compression_u" : tensor_shape_eq(compression_u, target_compression_u),
-        "compression_v" : tensor_shape_eq(compression_v, target_compression_v),
-    }   
-    value_diff = {
-        "compression_u" : tensor_value_eq(compression_u, target_compression_u),
-        "compression_v" : tensor_value_eq(compression_v, target_compression_v),
-    }
+    shape_diff = {}
+    for k in range(corr_channels-2):
+        shape_diff.update({
+            f"compression_u:{k}" : tensor_shape_eq(compression_u[:,k], target_compression_u[:,k]),
+            f"compression_v:{k}" : tensor_shape_eq(compression_v[:,k], target_compression_v[:,k]),
+        })
+    value_diff = {}
+    for k in range(corr_channels-2):
+        value_diff.update({
+            f"compression_u:{k}" : tensor_value_eq(compression_u[:,k], target_compression_u[:,k]),
+            f"compression_v:{k}" : tensor_value_eq(compression_v[:,k], target_compression_v[:,k]),
+        })
 
     return shape_diff, value_diff
 
@@ -288,7 +299,7 @@ def random_same_shape_testing_maxavg(iterations):
 
     print(max_diff)
 
-def benchmark_compression(batch_size, ht, wd, fdim, corr_channels, num_threads=1):
+def benchmark_compression(batch_size, ht, wd, fdim, corr_channels, num_threads=1, num_iters=10):
 
     results = []
     label = 'compress'
@@ -324,7 +335,7 @@ def benchmark_compression(batch_size, ht, wd, fdim, corr_channels, num_threads=1
         # for batch_size=5, ht=200,wd=100,fdim=100
         # 9613MiB GPU memory usage of python process
         # 130.49 ms duration
-        results.append(t0.timeit(10))
+        results.append(t0.timeit(num_iters))
 
         t1 = benchmark.Timer(
             stmt='compute_compression_cuda(x, y, a_u, a_v)',
@@ -339,7 +350,7 @@ def benchmark_compression(batch_size, ht, wd, fdim, corr_channels, num_threads=1
         # batch_size=5, ht=200,wd=100,fdim=100
         # 1745MiB GPU memory usage of python process
         # 10.04 s duration: can be optimized
-        results.append(t1.timeit(10))
+        results.append(t1.timeit(num_iters))
 
         return results
 
@@ -359,43 +370,12 @@ def comparison_benchmark_maxavg():
     compare = benchmark.Compare(results)
     compare.print()
 
-    # [------------------ maxavg -----------------]
-    #                         |  torch  |   cuda 
-    # 1 threads: ----------------------------------
-    #     [1, 80, 160, 50]    |    7.6  |   413.0
-    #     [1, 80, 160, 200]   |    9.9  |   752.3
-    #     [1, 160, 80, 50]    |    7.5  |   406.9
-    #     [1, 160, 80, 200]   |   10.7  |   770.0
-    #     [1, 130, 160, 50]   |   17.9  |  1265.4
-    #     [1, 130, 160, 200]  |   25.5  |  2414.3
-    #     [3, 80, 160, 50]    |   20.8  |  1633.8
-    #     [3, 80, 160, 200]   |   39.9  |  3287.4
-    #     [3, 160, 80, 50]    |   22.8  |  1537.7
-    #     [3, 160, 80, 200]   |   42.3  |  3305.0
-    #     [3, 130, 160, 50]   |   61.6  |  4820.8
-    #     [3, 130, 160, 200]  |  116.3  |  9397.4
-    # 16 threads: ---------------------------------
-    #     [1, 80, 160, 50]    |    6.9  |   411.8
-    #     [1, 80, 160, 200]   |   10.0  |   776.5
-    #     [1, 160, 80, 50]    |    7.5  |   406.7
-    #     [1, 160, 80, 200]   |   10.7  |   770.0
-    #     [1, 130, 160, 50]   |   17.9  |  1264.0
-    #     [1, 130, 160, 200]  |   25.8  |  2413.8
-    #     [3, 80, 160, 50]    |   20.8  |  1632.1
-    #     [3, 80, 160, 200]   |   39.9  |  3294.0
-    #     [3, 160, 80, 50]    |   22.9  |  1541.6
-    #     [3, 160, 80, 200]   |   42.3  |  3298.4
-    #     [3, 130, 160, 50]   |   61.3  |  4817.2
-    #     [3, 130, 160, 200]  |  116.3  |  9392.4
-
-    # Times are in milliseconds (ms).
-
 
 if __name__ == "__main__":
     # run_comparison(10, (15,30), 20, 4, 4)
-    # benchmark.Compare(benchmark_compression(batch_size=5, ht=200, wd=100, fdim=100, corr_channels=4)).print()
+    benchmark.Compare(benchmark_compression(batch_size=5, ht=200, wd=100, fdim=100, corr_channels=4, num_iters=30)).print()
     #comparison_benchmark_maxavg()
-    print(test_example_same_size(5, 7, 14, 100, 4))
-    #test_example_structured()
+    # test_example_structured()
+    print(test_example_same_size(5, 117, 217, 128, 4))
     print(test_example_diff_size(3, 80, 160, 100, 4, 3))
     # random_same_shape_testing_maxavg(10)
