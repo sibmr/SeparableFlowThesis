@@ -378,7 +378,14 @@ class CostAggregation(nn.Module):
             is_ux (bool, optional): _description_. Defaults to True.
 
         Returns:
-            _type_: _description_
+            if self.training:
+                Tuple[torch.Tensor,torch.Tensor,torch.Tensor,torch.Tensor] : shift0, shift1, shift2, corr
+                shift0  :   motion regression from first preliminary 3D correlation volume
+                shift1  :   motion regression from second preliminary 3D correlation volume
+                shift2  :   motion regression from final aggregated 3D correlation volume
+                corr    :   final aggregated 3D correlation volume
+            else:
+                Tuple[torch.Tensor,torch.Tensor] : shift2, corr
         """
         
         # receives (batch, 2*levels, wd OR ht, ht, wd)
