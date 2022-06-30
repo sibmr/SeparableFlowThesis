@@ -296,6 +296,7 @@ def main():
         args.dist_url = f"tcp://127.0.0.1:{port}"
         
         # world size goes from number of nodes to total number of gpus
+        # for 4 gpus on 1 node: world_size = 4 * 1 = 4
         args.world_size = args.ngpus_per_node * args.world_size
         
         # spawn new process for each gpu
@@ -345,7 +346,7 @@ def main_worker(gpu, ngpus_per_node, argss):
     """ main function executed in each process
 
     Args:
-        gpu (string): gpu index
+        gpu (string): gpu index of current process (each process has 1 gpu)
         ngpus_per_node (int): number of gpus per node
         argss (argparse.Namespace): arguments passed to the worker
     """
@@ -390,7 +391,8 @@ def main_worker(gpu, ngpus_per_node, argss):
     else:
         model = torch.nn.DataParallel(model).cuda()
 
-    #scheduler = None
+    load_weights_state_msg = ""
+    load_resume_state_msg = ""
 
     # load weights at the start of training
     if args.weights:
@@ -398,12 +400,13 @@ def main_worker(gpu, ngpus_per_node, argss):
             checkpoint = torch.load(args.weights, map_location=lambda storage, loc: storage.cuda())
             msg=model.load_state_dict(checkpoint['state_dict'], strict=False)
             if main_process():
-                print("=> loaded checkpoint '{}'".format(args.weights))
-                print(msg)
+                load_weights_state_msg = f"=> loaded checkpoint '{args.weights}'\n{msg}"
+                print(load_weights_state_msg)
                 sys.stdout.flush()
         else:
             if main_process():
-                print("=> no checkpoint found at '{}'".format(args.weights))
+                load_weights_state_msg = f"=> no checkpoint found at '{args.weights}'"
+                print(load_weights_state_msg)
 
     # load previous weights, but also optimizer and scheduler state 
     if args.resume:
@@ -415,12 +418,13 @@ def main_worker(gpu, ngpus_per_node, argss):
             
             args.start_epoch = checkpoint['epoch'] + 1
             if main_process():
-                print("=> resume checkpoint '{}'".format(args.resume))
-                print(msg)
+                load_resume_state_msg = f"=> resume checkpoint '{args.resume}'\n{msg}"
+                print(load_resume_state_msg)
                 sys.stdout.flush()
         else:
             if main_process():
-                print("=> no checkpoint found at '{}'".format(args.resume))
+                load_resume_state_msg = f"=> no checkpoint found at '{args.resume}'"
+                print(load_resume_state_msg)
 
     # create logger
     stats_logger = Logger(log_dir=args.log_path, current_steps=0)
@@ -439,6 +443,10 @@ def main_worker(gpu, ngpus_per_node, argss):
     logger.setLevel(logging.DEBUG)
     logger.addHandler(filehandler)
     logger.addHandler(streamhandler)
+
+    if load_weights_state_msg or load_resume_state_msg:
+        resume_part = f"\n{load_resume_state_msg}" if load_resume_state_msg else ""
+        logger.info(f"{load_weights_state_msg}{resume_part}")
 
     logger.info(f"starting to train on gpu {gpu}")
 
@@ -568,6 +576,8 @@ def train(training_data_loader, model, optimizer, scheduler, stats_logger, epoch
             print("Epoch " + str(epoch) + ": freezing bn...")
             sys.stdout.flush()
     
+    logger = logging.getLogger("sepflow.train.epoch.debug")
+
     # iterate over all batches in the dataset
     for iteration, batch in enumerate(training_data_loader):
         
@@ -603,6 +613,13 @@ def train(training_data_loader, model, optimizer, scheduler, stats_logger, epoch
             
             # calculate loss
             loss, metrics = sequence_loss(flow_predictions, target, valid)
+
+            logger.log(f"GPU:{args.rank}, valid_iteration:{valid_iteration}\n"
+            + f"input1.shape:{input1.shape}, input2.shape:{input2.shape}\n"
+            + f"optimizer_group_lr:{[group['lr'] for group in optimizer.param_groups]}\n"
+            + f"scheduler_group_lr:{scheduler.get_last_lr()}\n"
+            + f"loss:{loss}\n"
+            + f"metrics:{metrics}")
 
             # backpropagation of loss gradient
             loss.backward()
