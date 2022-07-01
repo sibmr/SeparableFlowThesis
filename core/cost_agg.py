@@ -28,12 +28,23 @@ class DomainNorm2(nn.Module):
 
 class DomainNorm(nn.Module):
     def __init__(self, channel, l2=True):
+        """ instance norm with option to do l2-normalization over the channels dimension as a first step
+            the instance norm has learnable affine parameters for each channel
+
+        Args:
+            channel (int): number of channels in the module input tensor
+            l2 (bool, optional): whether to apply l2-norm over the channels vector (for each pixel in each batch independently). Defaults to True.
+        """
         super(DomainNorm, self).__init__()
         self.normalize = nn.InstanceNorm2d(num_features=channel, affine=True)
         self.l2 = l2
     def forward(self, x):
         if self.l2:
+            # divide channel vectors x[b,:,h,w] by their l2-norm
+            # now: l2norm(x[b,:,h,w]) = 1
             x = F.normalize(x, p=2, dim=1)
+        # instance normalization: E[x] = mean(x[b,c,:,:]), Var[x] = var(x[b,c,:,:])
+        # after normalization: mean(x[b,c,:,:]) = 0, var[x[b,c,:,:]] = 1
         x = self.normalize(x)
         return x
 
@@ -374,8 +385,8 @@ class CostAggregation(nn.Module):
         Args:
             x (torch.Tensor): C_u or C_v cost volume of shape (batch, 2*levels, wd OR ht, ht, wd)
             g (dict): contains sg1, sg2, sg3, sg11, sg12 tensors for guiding the aggregation based on image1 and its features
-            max_shift (int, optional): _description_. Defaults to 400.
-            is_ux (bool, optional): _description_. Defaults to True.
+            max_shift (int, optional): largest possible shift (u OR v displacement) used in motion regression. Defaults to 400.
+            is_ux (bool, optional): True if C_u is aggregated, otherwise False. Defaults to True.
 
         Returns:
             if self.training:
@@ -533,11 +544,11 @@ class Corr2Cost(nn.Module):
         return img
 
     def forward(self, corr, maxdisp=50, is_ux=True):
-        """ index 3d correlation volume with all possible displacements for u OR v
+        """ index 3d correlation volume with all possible displacements for u OR v (up to maxdisp)
 
         Args:
             corr (torch.Tensor): 3d correlation volume of shape (batch, inner_dim, wd OR ht, ht, wd)
-            maxdisp (int, optional): largest displacement. Defaults to 50.
+            maxdisp (int, optional): largest displacement considered for indexing. Defaults to 50.
             is_ux (bool, optional): whether the corr stems from C_u or C_v. Defaults to True.
 
         Returns:
