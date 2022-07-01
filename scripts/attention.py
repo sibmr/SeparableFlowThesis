@@ -1,9 +1,7 @@
 from typing import Callable
 import torch
 import torch.nn.functional as F
-from datetime import datetime
-from datetime import timedelta
-
+from torch.utils import benchmark
 class CorrBlock:
     
     def __init__(self, batch, ht, wd, num_levels, radius):
@@ -12,7 +10,7 @@ class CorrBlock:
         self.radius = radius
         self.corr_pyramid = []
 
-        corr = torch.randn((batch, ht, wd, ht, wd))
+        corr = torch.randn((batch, ht, wd, ht, wd)).cuda()
 
         batch, h1, w1, h2, w2 = corr.shape
         self.shape = corr.shape
@@ -384,39 +382,68 @@ class CorrBlock:
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-def benchmark_function(niter, fct, *args, **kwargs):
-    timing1 = timedelta(0)
-    for i in range(niter):
-        start1 = datetime.now()
-        corr1, corr2, adaptive_corr_u_lvls, adaptive_corr_v_lvls = fct(*args, **kwargs)
-        stop1 = datetime.now()
-        timing1 += (stop1-start1)
-    timing1 = timing1 * (1/niter)
-    print(timing1)
+def exec_fct(fct, *args, **kwargs):
+    return fct(*args, **kwargs)
 
-    return corr1, corr2, adaptive_corr_u_lvls, adaptive_corr_v_lvls
+def benchmark_function(num_threads, sub_label, description, fct, *args, **kwargs):
+    
+    t0 = benchmark.Timer(
+        stmt='fct(*args, **kwargs)',
+        setup='from __main__ import exec_fct',
+        globals={'fct' : fct, 'args' : args, 'kwargs' : kwargs},
+        num_threads=num_threads,
+        label=None,
+        sub_label=sub_label,
+        description=description,
+    )
+
+    return t0.timeit(100)
 
 if __name__ == "__main__":
 
     K = 6
 
-    attention1 = torch.nn.Conv3d(2, K-2, 3, padding=1)
-    attention2 = torch.nn.Conv3d(2, K-2, 3, padding=1)
+    attention1 = torch.nn.Conv3d(2, K-2, 3, padding=1).cuda()
+    attention2 = torch.nn.Conv3d(2, K-2, 3, padding=1).cuda()
 
     print(count_parameters(attention1))
 
+    params_list = [(3,16,32), (2,50,100), (1,80,160)]
+
+    results = []
+    for batch, ht, wd in params_list:
+        corr_fn = CorrBlock(batch, ht, wd, 4, 4)
+        
+        results_1 = benchmark_function(
+            1, f"{(batch, ht, wd)}", "broadcasting", corr_fn.separate_alt, (attention1, attention2), corr_fn.apply_attention_broadcasting)
+        
+        results_2 = benchmark_function(
+            1, f"{(batch, ht, wd)}", "einsum", corr_fn.separate_alt, (attention1, attention2), corr_fn.apply_attention_einsum)
+
+        results.append(results_1)
+        results.append(results_2)
+
+    compare = benchmark.Compare(results)
+    compare.print()
+
+    """
+      [---------------------  ---------------------]
+                        |  broadcasting  |  einsum
+      1 threads: -----------------------------------
+          (3, 16, 32)   |       1.5      |    1.7 
+          (2, 50, 100)  |      54.5      |    8.0 
+          (1, 80, 160)  |     210.9      |   18.9 
+    """
+
     corr_fn = CorrBlock(2, 16, 32, 4, 4)
-    
-    corr1, corr2, adaptive_corr_u_lvls1, adaptive_corr_v_lvls1 = benchmark_function(
-        1000, corr_fn.separate_alt, (attention1, attention2), corr_fn.apply_attention_broadcasting)
-    
-    corr1, corr2, adaptive_corr_u_lvls2, adaptive_corr_v_lvls2 = benchmark_function(
-        1000, corr_fn.separate_alt, (attention1, attention2), corr_fn.apply_attention_einsum)
-    
+
+    corr1, corr2, adaptive_corr_u_lvls1, adaptive_corr_v_lvls1 = corr_fn.separate_alt((attention1, attention2), corr_fn.apply_attention_broadcasting)
+    corr1, corr2, adaptive_corr_u_lvls2, adaptive_corr_v_lvls2 = corr_fn.separate_alt((attention1, attention2), corr_fn.apply_attention_einsum)
+
     print("maximum per-value absolute error")
     for i in range(len(adaptive_corr_u_lvls1)):
-        print(((adaptive_corr_u_lvls1[i] - adaptive_corr_u_lvls2[i]).abs()).max()/adaptive_corr_u_lvls1[i].flatten().shape[0])
-        print(((adaptive_corr_v_lvls1[i] - adaptive_corr_v_lvls2[i]).abs()).max()/adaptive_corr_v_lvls1[i].flatten().shape[0])
+        print(((adaptive_corr_u_lvls1[i] - adaptive_corr_u_lvls2[i]).abs()).max())
+        print(((adaptive_corr_v_lvls1[i] - adaptive_corr_v_lvls2[i]).abs()).max())
 
     print("corr1/corr2 shape")
     print(corr1.shape)
