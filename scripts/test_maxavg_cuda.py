@@ -140,8 +140,8 @@ def compute_maxavg_cuda(img1_features_l0 : torch.Tensor, img2_features_lk : torc
 
 def test_example_same_size(batch_size, ht, wd, fdim, val_low=-2, val_high=2):
     # shape: (batch, ht, wd, fdim)
-    img1_features_l0 = torch.rand((batch_size, ht, wd, fdim)).cuda() * (val_high - val_low) - val_low
-    img2_features_l0 = torch.rand((batch_size, ht, wd, fdim)).cuda() * (val_high - val_low) - val_low
+    img1_features_l0 = torch.rand((batch_size, ht, wd, fdim)).cuda() * (val_high - val_low) + val_low
+    img2_features_l0 = torch.rand((batch_size, ht, wd, fdim)).cuda() * (val_high - val_low) + val_low
 
     target_max_u, target_avg_u, target_max_v, target_avg_v = compute_maxavg_torch(img1_features_l0, img2_features_l0)
 
@@ -163,8 +163,8 @@ def test_example_same_size(batch_size, ht, wd, fdim, val_low=-2, val_high=2):
     return shape_diff, value_diff
 
 def test_example_diff_size(batch_size, ht, wd, fdim, level, val_low=-2, val_high=2):
-    img1_features_l0 = torch.rand((batch_size, ht, wd, fdim)).cuda() * (val_high - val_low) - val_low
-    img2_features_l0 = torch.rand((batch_size, ht, wd, fdim)).cuda() * (val_high - val_low) - val_low
+    img1_features_l0 = torch.rand((batch_size, ht, wd, fdim)).cuda() * (val_high - val_low) + val_low
+    img2_features_l0 = torch.rand((batch_size, ht, wd, fdim)).cuda() * (val_high - val_low) + val_low
 
     img2_features_lk = img2_features_l0.permute(0,3,1,2)
     for _ in range(level):
@@ -303,7 +303,8 @@ if __name__ == "__main__":
     # run_comparison(10, (15,30), 20, 4, 4)
     benchmark.Compare(benchmark_maxavg(batch_size=5, ht=200, wd=100, fdim=100)).print()
     # comparison_benchmark_maxavg()
-    print(test_example_same_size(5, 117, 217, 100   , val_low=-1, val_high=1))
-    print(test_example_diff_size(3, 117, 217, 100, 3, val_low=-1, val_high=1))
-    print(test_example_diff_size(3, 4*8, 8*8, 100, 3, val_low=-1, val_high=1))
+    print(test_example_same_size(5, 117, 217, 100   , val_low=-2, val_high=2))
+    # TODO: investigate larger error for b=3,h=117,w=217,fdim=100,level=3
+    print(test_example_diff_size(3, 117, 217, 100, 3, val_low=-2, val_high=2))
+    print(test_example_diff_size(3, 4*8, 8*8, 100, 3, val_low=-2, val_high=2))
     # random_same_shape_testing_maxavg(10)
