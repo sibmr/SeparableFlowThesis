@@ -106,8 +106,8 @@ __global__ void max_avg_forward_kernel (
  * @tparam scalar_t         datatype of the arrays
  * @param img1_features_l0  image1 features at level 0 of shape (batch, h1, w1, fdim)
  * @param img2_features_lk  image2 features at level k of shape (batch, h1/2**i, w1/2**i, fdim)
- * @param max_avg_output_u  output for max/avg values of C_u at level k of shape (batch, h1, w1, h1/2**k)
- * @param max_avg_output_v  output for max/avg values of C_v at level k of shape (batch, h1, w1, w1/2**k)
+ * @param max_avg_output_u  output for max/avg values of C_u at level k of shape (batch, h1, w1, 2, h1/2**k)
+ * @param max_avg_output_v  output for max/avg values of C_v at level k of shape (batch, h1, w1, 2, w1/2**k)
  * @return __global__ 
  */
 template <typename scalar_t>
@@ -292,6 +292,228 @@ __global__ void max_avg_forward_kernel_optimized_arch_indep (
     for (int v_inc = 0; v_inc < BLOCK_W; ++v_inc){
       if(withinBoundsHc0Wc0 && v_offset + v_inc < W2){
         max_v_global_ref[v_offset + v_inc] = vMax_ref [v_inc];
+        avg_v_global_ref[v_offset + v_inc] = vAvg_ref [v_inc] / H2;
+      }
+    }
+
+  }
+}
+
+/**
+ * @brief Optimized Max-Argmax-Avg-Kernel that is architecture independent with respect to Shared
+ *        Memory Requirement (16896 Bytes)
+ * 
+ * @tparam scalar_t         datatype of the arrays
+ * @param img1_features_l0  image1 features at level 0 of shape (batch, h1, w1, fdim)
+ * @param img2_features_lk  image2 features at level k of shape (batch, h1/2**i, w1/2**i, fdim)
+ * @param max_avg_output_u  output for max/avg values of C_u at level k of shape (batch, h1, w1, 2, h1/2**k)
+ * @param max_avg_output_v  output for max/avg values of C_v at level k of shape (batch, h1, w1, 2, w1/2**k)
+ * @param argmax_output_u  output for argmax values of C_u at level k of shape (batch, h1, w1, 1, h1/2**k)
+ * @param argmax_output_v  output for argmax values of C_v at level k of shape (batch, h1, w1, 1, w1/2**k)
+ * @return __global__ 
+ */
+template <typename scalar_t>
+__global__ void max_argmax_avg_forward_kernel_optimized_arch_indep (
+  const torch::PackedTensorAccessor32<scalar_t,4,torch::RestrictPtrTraits> img1_features_l0,
+  const torch::PackedTensorAccessor32<scalar_t,4,torch::RestrictPtrTraits> img2_features_lk,
+  torch::PackedTensorAccessor32<scalar_t,5,torch::RestrictPtrTraits> max_avg_output_u,
+  torch::PackedTensorAccessor32<scalar_t,5,torch::RestrictPtrTraits> max_avg_output_v,
+  torch::PackedTensorAccessor32<scalar_t,5,torch::RestrictPtrTraits> argmax_output_u,
+  torch::PackedTensorAccessor32<scalar_t,5,torch::RestrictPtrTraits> argmax_output_v)
+{
+
+  const int B = img1_features_l0.size(0); // batch size
+  const int H1 = img1_features_l0.size(1); // ht of img1
+  const int W1 = img1_features_l0.size(2); // wd of img1
+  const int H2 = img2_features_lk.size(1); // ht of current lvl: ht/2**i
+  const int W2 = img2_features_lk.size(2); // wd of current lvl: wd/2**i
+  const int C = img1_features_l0.size(3); // image feature dimension
+
+  const int b = blockIdx.x; // current batch
+
+  // global starting x/y value for this block
+  const int h0 = blockIdx.y * blockDim.x;   // block_i * BLOCK_H
+  const int w0 = blockIdx.z * blockDim.y;   // block_j * BLOCK_W
+
+  // global current x/y value for this thread (pixel in img1)
+  const int hc0 = h0 + threadIdx.x;
+  const int wc0 = w0 + threadIdx.y;
+
+  // number of "blocks" in u,v and feature direction
+  // not cuda blocks, but loaded into shared memory at the same time
+  const int uBlockLimit = (H2 + BLOCK_H - 1) / BLOCK_H;
+  const int vBlockLimit = (W2 + BLOCK_W - 1) / BLOCK_W;
+  const int fBlockLimit = (C + FEATURE_SPLIT_SIZE - 1) / FEATURE_SPLIT_SIZE;
+
+  // The sum should be below 49152 Bytes to be architecture independent
+
+  // 4096 Bytes
+  __shared__ scalar_t corr[BLOCK_H][BLOCK_W][BLOCK_H][BLOCK_W];
+  // 4096 Bytes
+  __shared__ scalar_t fcache1[BLOCK_H][BLOCK_W][FEATURE_SPLIT_SIZE];
+  // 4096 Bytes
+  __shared__ scalar_t fcache2[BLOCK_H][BLOCK_W][FEATURE_SPLIT_SIZE];
+  // 3 * 512 = 1536 Bytes
+  __shared__ scalar_t uMax[BLOCK_H][BLOCK_W][BLOCK_H];
+  __shared__ scalar_t uArgmax[BLOCK_H][BLOCK_W][BLOCK_H];
+  __shared__ scalar_t uAvg[BLOCK_H][BLOCK_W][BLOCK_H];
+  // 3 * 1024 = 3072 Bytes
+  __shared__ scalar_t vMax[BLOCK_H][BLOCK_W][BLOCK_W];
+  __shared__ scalar_t vArgmax[BLOCK_H][BLOCK_W][BLOCK_W];
+  __shared__ scalar_t vAvg[BLOCK_H][BLOCK_W][BLOCK_W];
+
+  // references into relevant array dimensions for this thread
+  auto g1_ref = img1_features_l0[b][hc0][wc0];
+  auto max_u_global_ref = max_avg_output_u[b][hc0][wc0][0];
+  auto avg_u_global_ref = max_avg_output_u[b][hc0][wc0][1];
+  auto argmax_u_global_ref = argmax_output_u[b][hc0][wc0][0];
+  auto max_v_global_ref = max_avg_output_v[b][hc0][wc0][0];
+  auto avg_v_global_ref = max_avg_output_v[b][hc0][wc0][1];
+  auto argmax_v_global_ref = argmax_output_v[b][hc0][wc0][0];
+
+  // pointers into relevant array dimensions for this thread
+  scalar_t (* corr_ref) [BLOCK_W] = corr [threadIdx.x][threadIdx.y];
+  scalar_t * uMax_ref = uMax [threadIdx.x][threadIdx.y];
+  scalar_t * uArgmax_ref = uArgmax [threadIdx.x][threadIdx.y];
+  scalar_t * uAvg_ref = uAvg [threadIdx.x][threadIdx.y];
+  scalar_t * vMax_ref = vMax [threadIdx.x][threadIdx.y];
+  scalar_t * vArgmax_ref = vArgmax [threadIdx.x][threadIdx.y];
+  scalar_t * vAvg_ref = vAvg [threadIdx.x][threadIdx.y];
+  
+  bool withinBoundsHc0Wc0 = within_bounds(hc0, wc0, H1, W1);
+
+  for (int v_block = 0; v_block < vBlockLimit; ++v_block){
+
+    const int v_offset = v_block * BLOCK_W;
+
+    // load v values
+    for (int v_inc = 0; v_inc < BLOCK_W; ++v_inc){
+      if(withinBoundsHc0Wc0 && v_offset + v_inc < W2){
+        vMax_ref [v_inc] = max_v_global_ref[v_offset + v_inc];
+        vArgmax_ref [v_inc] = argmax_v_global_ref[v_offset + v_inc];
+        vAvg_ref [v_inc] = avg_v_global_ref[v_offset + v_inc];
+      }else{
+        vMax_ref [v_inc] = -INFINITY;
+        vArgmax_ref [v_inc] = -1;
+        vAvg_ref [v_inc] = 0;
+      }
+    }
+
+    for (int u_block = 0; u_block < uBlockLimit; ++u_block){
+
+      const int u_offset = u_block * BLOCK_H;
+
+      // printf("%i %i   %i %i\n", hc0, wc0, u_block, v_block);
+
+      // reset correlation volume at the start of the uv-block (each thread resets one part)
+      for (int i = 0; i < BLOCK_H; ++i){
+        for (int j = 0; j < BLOCK_W; ++j){
+          corr_ref[i][j] = 0.0;
+        }
+      }
+
+      __syncthreads();
+
+      // compute block correlation volume in splits
+      for (int f_block = 0; f_block < fBlockLimit; ++f_block){
+        
+        int f_offset = f_block*FEATURE_SPLIT_SIZE;
+        
+        // load fmap1 split into shared memory (every thread is responsible for one)
+        scalar_t * fcache1_ptr = fcache1[threadIdx.x][threadIdx.y];
+        for(int i = 0; i<FEATURE_SPLIT_SIZE; ++i){
+          if(withinBoundsHc0Wc0 && f_offset+i < C){
+            fcache1_ptr[i] = g1_ref[f_offset+i];
+          }else{
+            fcache1_ptr[i] = 0;
+          }
+        }
+
+        // load fmap2 split into shared memory (every thread is responsible for one)
+        auto g2_ref = img2_features_lk[b][u_offset + threadIdx.x][v_offset + threadIdx.y];
+        scalar_t * fcache2_ptr = fcache2[threadIdx.x][threadIdx.y];
+        for(int i = 0; i<FEATURE_SPLIT_SIZE; ++i){
+          if(within_bounds(u_offset+threadIdx.x, v_offset+threadIdx.y, H2, W2) && f_offset+i < C){
+            fcache2_ptr[i] = g2_ref[f_offset+i];
+          }else{
+            fcache2_ptr[i] = 0.0;
+          }
+        }
+
+        // sync to prevent threads from using last iterations fcache2 values for corr computation
+        __syncthreads();
+
+        // accumulate block correlation volume
+        for (int u_inc = 0; u_inc < BLOCK_H; ++u_inc){
+          for (int v_inc = 0; v_inc < BLOCK_W; ++v_inc){
+            for(int f_inc = 0; f_inc<FEATURE_SPLIT_SIZE; ++f_inc){
+              corr_ref[u_inc][v_inc] += fcache1[threadIdx.x][threadIdx.y][f_inc]*fcache2[u_inc][v_inc][f_inc];
+            }
+          }
+        }
+
+        // sync to prevent threads from re-writing fcache2 before all threads are done with it
+        __syncthreads();
+      }
+
+      // now corr holds the values of the correlation volume for (block_u, block_v)
+
+      // load u values from global memory to shared memory
+      for (int u_inc = 0; u_inc < BLOCK_H; ++u_inc){
+        if(withinBoundsHc0Wc0 && u_offset+u_inc < H2){
+          uMax_ref [u_inc] = max_u_global_ref[u_offset + u_inc];
+          uArgmax_ref [u_inc] = argmax_u_global_ref[u_offset + u_inc];
+          uAvg_ref [u_inc] = avg_u_global_ref[u_offset + u_inc];
+        }else{
+          uMax_ref [u_inc] = -INFINITY;
+          uArgmax_ref [u_inc] = -1;
+          uAvg_ref [u_inc] = 0;
+        }
+      }
+
+      // compute umax,uavg,vmax,vavg
+      for (int u_inc = 0; u_inc < BLOCK_H; ++u_inc){
+        for (int v_inc = 0; v_inc < BLOCK_W; ++v_inc){
+          scalar_t cval = corr_ref[u_inc][v_inc];
+          
+          // check for out-of-bounds correlation fields (they are 0-valued)
+          // replace default-zero value by default-negative-infinity
+          // negative infinity is always rejected by max and thus does not influence it
+          scalar_t cval_checked = cval;
+          if(!(withinBoundsHc0Wc0 && u_offset+u_inc < H2 && v_offset+v_inc < W2)){
+            cval_checked = -INFINITY;
+          }
+
+          if(uMax_ref [u_inc] < cval_checked){
+            uMax_ref [u_inc] = cval_checked;
+            uArgmax_ref [u_inc] = v_offset + v_inc;
+          }
+          uAvg_ref [u_inc] += cval / W2;
+
+          if(vMax_ref [v_inc] < cval_checked){
+            vMax_ref [v_inc] = cval_checked;
+            vArgmax_ref [v_inc] = u_offset + u_inc;
+          }
+          vAvg_ref [v_inc] += cval;
+        }
+      }
+
+      // store u values into global memory from shared memory
+      for (int u_inc = 0; u_inc < BLOCK_H; ++u_inc){
+        if(withinBoundsHc0Wc0 && u_offset + u_inc < H2){
+          max_u_global_ref[u_offset + u_inc] = uMax_ref [u_inc];
+          argmax_u_global_ref[u_offset + u_inc] = uArgmax_ref [u_inc];
+          avg_u_global_ref[u_offset + u_inc] = uAvg_ref [u_inc];
+        }
+      }
+
+    }
+
+    // store v values into global memory from shared memory
+    for (int v_inc = 0; v_inc < BLOCK_W; ++v_inc){
+      if(withinBoundsHc0Wc0 && v_offset + v_inc < W2){
+        max_v_global_ref[v_offset + v_inc] = vMax_ref [v_inc];
+        argmax_v_global_ref[v_offset + v_inc] = vArgmax_ref [v_inc];
         avg_v_global_ref[v_offset + v_inc] = vAvg_ref [v_inc] / H2;
       }
     }
@@ -740,6 +962,70 @@ std::vector<torch::Tensor> max_avg_cuda_forward (
   // printf("Run kernel: %s\n", cudaGetErrorString(err));
 
   return {max_avg_output_u, max_avg_output_v};
+}
+
+std::vector<torch::Tensor> max_argmax_avg_cuda_forward (
+        at::Tensor img1_features_l0, 
+        at::Tensor img2_features_lk){
+
+  const int B = img1_features_l0.size(0); // batch size
+  const int H1 = img1_features_l0.size(1); // ht of img1
+  const int W1 = img1_features_l0.size(2); // wd of img1
+  const int H2 = img2_features_lk.size(1); // ht of current lvl: ht/2**i
+  const int W2 = img2_features_lk.size(2); // wd of current lvl: wd/2**i
+  const int C = img1_features_l0.size(3); // image feature dimension
+
+  // properties of the input
+  auto opts = img1_features_l0.options();
+
+  // allocate storage for result
+  auto max_avg_output_u = torch::cat(
+    {
+      torch::full({B, H1, W1, 1, H2}, -INFINITY, opts),
+      torch::zeros({B, H1, W1, 1, H2}, opts)
+    }, 
+    3);
+  auto max_avg_output_v = torch::cat(
+    {
+      torch::full({B, H1, W1, 1, W2}, -INFINITY, opts),
+      torch::zeros({B, H1, W1, 1, W2}, opts)
+    }, 
+    3);
+
+  auto argmax_output_u = torch::zeros({B, H1, W1, 1, H2}, opts);
+  auto argmax_output_v = torch::zeros({B, H1, W1, 1, W2}, opts);
+  
+  // number of blocks
+  // shape: (batch, (ht+4-1)/4, (wd+8-1)/8) = (batch, ceil(ht/4), ceil(ht/8))
+  const dim3 blocks(B, (H1+BLOCK_H-1)/BLOCK_H, (W1+BLOCK_W-1)/BLOCK_W);
+  
+  // number of threads per block
+  // shape: (4,8)
+  const dim3 threads(BLOCK_H, BLOCK_W);
+  
+  // AT_DISPATCH_FLOATING_TYPES(img1_features_l0.type(), "max_avg_cuda_forward", ([&] {
+  //   max_avg_forward_kernel <scalar_t> <<< blocks, threads >>> (
+  //     img1_features_l0.packed_accessor32<scalar_t,4,torch::RestrictPtrTraits>(),
+  //     img2_features_lk.packed_accessor32<scalar_t,4,torch::RestrictPtrTraits>(),
+  //     max_avg_output_u.packed_accessor32<scalar_t,5,torch::RestrictPtrTraits>(),
+  //     max_avg_output_v.packed_accessor32<scalar_t,5,torch::RestrictPtrTraits>()
+  //   );
+  // }));
+
+  
+  max_argmax_avg_forward_kernel_optimized_arch_indep <float> <<< blocks, threads >>> (
+    img1_features_l0.packed_accessor32<float,4,torch::RestrictPtrTraits>(),
+    img2_features_lk.packed_accessor32<float,4,torch::RestrictPtrTraits>(),
+    max_avg_output_u.packed_accessor32<float,5,torch::RestrictPtrTraits>(),
+    max_avg_output_v.packed_accessor32<float,5,torch::RestrictPtrTraits>(),
+    argmax_output_u.packed_accessor32<float,5,torch::RestrictPtrTraits>(),
+    argmax_output_v.packed_accessor32<float,5,torch::RestrictPtrTraits>()
+  );
+
+  // cudaError_t err = cudaThreadSynchronize();
+  // printf("Run kernel: %s\n", cudaGetErrorString(err));
+
+  return {max_avg_output_u, max_avg_output_v, argmax_output_u, argmax_output_v};
 }
 
 std::vector<torch::Tensor> compression_cuda_forward (
