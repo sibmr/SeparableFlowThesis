@@ -1,4 +1,3 @@
-from multiprocessing import pool
 from typing import Callable
 import torch
 from torch.autograd import Function
