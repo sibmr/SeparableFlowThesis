@@ -261,10 +261,19 @@ __global__ void max_avg_forward_kernel_optimized_arch_indep (
       for (int u_inc = 0; u_inc < BLOCK_H; ++u_inc){
         for (int v_inc = 0; v_inc < BLOCK_W; ++v_inc){
           scalar_t cval = corr_ref[u_inc][v_inc];
-          uMax_ref [u_inc] = max(uMax_ref [u_inc], cval);
+
+          // check for out-of-bounds correlation fields (they are 0-valued)
+          // replace default-zero value by default-negative-infinity
+          // negative infinity is always rejected by max and thus does not influence it
+          scalar_t cval_checked = cval;
+          if(!(withinBoundsHc0Wc0 && u_offset+u_inc < H2 && v_offset+v_inc < W2)){
+            cval_checked = -INFINITY;
+          }
+
+          uMax_ref [u_inc] = max(uMax_ref [u_inc], cval_checked);
           uAvg_ref [u_inc] += cval / W2;
 
-          vMax_ref [v_inc] = max(vMax_ref [v_inc], cval);
+          vMax_ref [v_inc] = max(vMax_ref [v_inc], cval_checked);
           vAvg_ref [v_inc] += cval;
         }
       }

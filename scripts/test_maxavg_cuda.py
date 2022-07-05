@@ -16,8 +16,20 @@ from libs.MemorySaver.functions.MemorySaver import ComputeMaxAvgFunction
 
 from core.corr import CorrBlock, CorrBlock1D
 
+import numpy as np
+
 def tensor_value_eq(a : torch.Tensor, b : torch.Tensor) -> torch.Tensor:
-    return (a-b).abs().max()
+    abs_diff = (a-b).abs()
+    if abs_diff.max().item() > 0.1:
+        high_diff_idxs = torch.stack(torch.where(abs_diff > 0.001)).permute(1,0)
+        for idx in high_diff_idxs:
+            print(f"large difference at: {idx}")
+            print(a[tuple(idx)])
+            print(b[tuple(idx)])
+
+    max_difference_index = np.unravel_index(abs_diff.argmax().item(), abs_diff.shape)
+
+    return abs_diff.max().item()
 
 def tensor_shape_eq(a : torch.Tensor, b : torch.Tensor):
     return (a.shape, b.shape)
@@ -176,9 +188,6 @@ def test_example_diff_size(batch_size, ht, wd, fdim, level, val_low=-2, val_high
 
     max_u, avg_u, max_v, avg_v = compute_maxavg_cuda(img1_features_l0, img2_features_lk)
 
-    print(max_u.shape)
-    print(target_max_u.shape)
-
     shape_diff = {
         "max_u" : tensor_shape_eq(max_u, target_max_u),
         "avg_u" : tensor_shape_eq(avg_u, target_avg_u),
@@ -304,7 +313,8 @@ if __name__ == "__main__":
     benchmark.Compare(benchmark_maxavg(batch_size=5, ht=200, wd=100, fdim=100)).print()
     # comparison_benchmark_maxavg()
     print(test_example_same_size(5, 117, 217, 100   , val_low=-2, val_high=2))
-    # TODO: investigate larger error for b=3,h=117,w=217,fdim=100,level=3
     print(test_example_diff_size(3, 117, 217, 100, 3, val_low=-2, val_high=2))
-    print(test_example_diff_size(3, 4*8, 8*8, 100, 3, val_low=-2, val_high=2))
+    print(test_example_diff_size(3, 71, 111, 100, 3, val_low=-2, val_high=2))
+    print(test_example_diff_size(3, 71, 111, 100, 2, val_low=-2, val_high=2))
+    print(test_example_diff_size(3, 71, 111, 100, 1, val_low=-2, val_high=2))
     # random_same_shape_testing_maxavg(10)
