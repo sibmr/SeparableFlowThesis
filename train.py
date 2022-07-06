@@ -614,12 +614,12 @@ def train(training_data_loader, model, optimizer, scheduler, stats_logger, epoch
             # calculate loss
             loss, metrics = sequence_loss(flow_predictions, target, valid)
 
-            logger.info(f"GPU:{args.rank}, valid_iteration:{valid_iteration}\n"
-            + f"input1.shape:{input1.shape}, input2.shape:{input2.shape}\n"
-            + f"optimizer_group_lr:{[group['lr'] for group in optimizer.param_groups]}\n"
-            + f"scheduler_group_lr:{scheduler.get_last_lr()}\n"
-            + f"loss:{loss}\n"
-            + f"metrics:{metrics}")
+            # logger.info(f"GPU:{args.rank}, valid_iteration:{valid_iteration}\n"
+            # + f"input1.shape:{input1.shape}, input2.shape:{input2.shape}\n"
+            # + f"optimizer_group_lr:{[group['lr'] for group in optimizer.param_groups]}\n"
+            # + f"scheduler_group_lr:{scheduler.get_last_lr()}\n"
+            # + f"loss:{loss}\n"
+            # + f"metrics:{metrics}")
 
             # backpropagation of loss gradient
             loss.backward()
