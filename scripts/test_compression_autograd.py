@@ -237,7 +237,7 @@ def get_gradient_lowMem(fmap1_l0 : torch.Tensor, fmap2_l0 : torch.Tensor, attent
 
     return fmap1_l0.grad, fmap2_l0.grad, attention.grad
 
-def test_cucompression():
+def test_cucompression(batch, ht, wd, fdim, level):
     batch, ht, wd, fdim = (2,5,10,7)
     level = 2
 
@@ -262,9 +262,7 @@ def test_cucompression():
     print((grad_target_a_u - grad_a_u).abs().max())
     print((grad_target_fmap1_l0==grad_fmap1_l0).float().sum())
 
-def test_cvcompression():
-    batch, ht, wd, fdim = (2,5,10,7)
-    level = 2
+def test_cvcompression(batch, ht, wd, fdim, level):
 
     fmap1_l0, fmap2_l0 = get_input(batch, ht, wd, fdim)
 
@@ -287,9 +285,7 @@ def test_cvcompression():
     print((grad_target_a_v - grad_a_v).abs().max())
     print((grad_target_fmap1_l0==grad_fmap1_l0).float().sum())
 
-def check_forward_pass():
-    batch, ht, wd, fdim = (2,3,4,5)
-    level = 0
+def check_forward_pass(batch, ht, wd, fdim, level):
 
     fmap1_l0, fmap2_l0 = get_input(batch, ht, wd, fdim, level)
 
@@ -310,10 +306,7 @@ def check_forward_pass():
         print((target_compression_u-pred_compression_u).abs().max())
         print((target_compression_v-pred_compression_v).abs().max())
 
-def gradcheck_cucompression():
-
-    batch, ht, wd, fdim = (2,3,4,5)
-    level = 0
+def gradcheck_cucompression(batch, ht, wd, fdim, level):
 
     fmap1_l0, fmap2_l0 = get_input(batch, ht, wd, fdim, level)
     fmap1_l0 = fmap1_l0.double()
@@ -331,9 +324,12 @@ def gradcheck_cucompression():
     return torch.autograd.gradcheck(CUCompression.apply, (fmap1_l0, fmap2_lk, a_u), eps=1e-5)
 
 if __name__ == "__main__":
-    print("forward max difference:")
-    check_forward_pass()
-    print("--------------cucompression--------------")
-    test_cucompression()
-    print("--------------cvcompression--------------")
-    test_cvcompression()
+    batch, ht, wd, fdim = (2,8,8,5)
+    for level in range(4):
+        print(f"--------------(level {level})--------------")
+        print("forward max difference:")
+        check_forward_pass(batch, ht, wd, fdim, level)
+        print("--------------cucompression--------------")
+        test_cucompression(batch, ht, wd, fdim, level)
+        print("--------------cvcompression--------------")
+        test_cvcompression(batch, ht, wd, fdim, level)

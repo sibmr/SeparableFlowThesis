@@ -1,7 +1,16 @@
+from pathlib import Path
+import sys
+import os
+path_root = Path(__file__).parents[1]
+sys.path.append(str(path_root))
+sys.path.append(os.path.join(path_root, "core"))
+
 from typing import Callable
 import torch
 from torch.autograd import Function
 import torch.nn.functional as F
+
+from libs.MemorySaver.functions.MemorySaver import ComputeMaxArgmaxAvgFunction
 
 class CUMax(Function):
     @staticmethod
@@ -285,9 +294,7 @@ def get_gradient_lowMem(fmap1_l0 : torch.Tensor, fmap2_l0 : torch.Tensor, level 
 
     return fmap1_l0.grad, fmap2_l0.grad
 
-def test_cumax():
-    batch, ht, wd, fdim = (2,5,10,7)
-    level = 2
+def test_cumax(batch, ht, wd, fdim, level):
 
     fmap1_l0, fmap2_l0 = get_input(batch, ht, wd, fdim)
    
@@ -302,9 +309,7 @@ def test_cumax():
     print((grad_target_fmap2_l0 - grad_fmap2_l0).abs().max())
     print((grad_target_fmap1_l0==grad_fmap1_l0).float().sum())
 
-def test_cuavg():
-    batch, ht, wd, fdim = (2,5,10,7)
-    level = 2
+def test_cuavg(batch, ht, wd, fdim, level):
 
     fmap1_l0, fmap2_l0 = get_input(batch, ht, wd, fdim)
    
@@ -319,10 +324,8 @@ def test_cuavg():
     print((grad_target_fmap2_l0 - grad_fmap2_l0).abs().max())
     print((grad_target_fmap1_l0==grad_fmap1_l0).float().sum())
 
-def test_cvmax():
-    batch, ht, wd, fdim = (2,5,10,7)
-    level = 2
-
+def test_cvmax(batch, ht, wd, fdim, level):
+    
     fmap1_l0, fmap2_l0 = get_input(batch, ht, wd, fdim)
    
     grad_target_fmap1_l0, grad_target_fmap2_l0 = get_gradient_fullMem(fmap1_l0, fmap2_l0, level,
@@ -336,10 +339,8 @@ def test_cvmax():
     print((grad_target_fmap2_l0 - grad_fmap2_l0).abs().max())
     print((grad_target_fmap1_l0==grad_fmap1_l0).float().sum())
 
-def test_cvavg():
-    batch, ht, wd, fdim = (2,5,10,7)
-    level = 2
-
+def test_cvavg(batch, ht, wd, fdim, level):
+    
     fmap1_l0, fmap2_l0 = get_input(batch, ht, wd, fdim)
    
     grad_target_fmap1_l0, grad_target_fmap2_l0 = get_gradient_fullMem(fmap1_l0, fmap2_l0, level,
@@ -353,9 +354,7 @@ def test_cvavg():
     print((grad_target_fmap2_l0 - grad_fmap2_l0).abs().max())
     print((grad_target_fmap1_l0==grad_fmap1_l0).float().sum())
 
-def check_forward_pass():
-    batch, ht, wd, fdim = (2,3,4,5)
-    level = 0
+def check_forward_pass(batch, ht, wd, fdim, level):
 
     fmap1_l0, fmap2_l0 = get_input(batch, ht, wd, fdim, level)
 
@@ -390,14 +389,106 @@ def gradcheck_cumax():
 
     return torch.autograd.gradcheck(CUAvg.apply, (fmap1_l0, fmap2_lk))
 
+def get_overall_grad_lowMem(fmap1_l0, fmap2_l0, level):
+    fmap1_l0 = fmap1_l0.clone().detach()
+    fmap2_l0 = fmap2_l0.clone().detach()
+
+    fmap1_l0.requires_grad = True
+    fmap2_l0.requires_grad = True
+
+    fmap2_lk = pool_fmap_lk(fmap2_l0, level)
+
+    umax = CUMax.apply(fmap1_l0, fmap2_lk)
+    
+    uavg = CUAvg.apply(fmap1_l0, fmap2_lk)
+    
+    vmax = CVMax.apply(fmap1_l0, fmap2_lk)
+
+    vavg = CVAvg.apply(fmap1_l0, fmap2_lk)
+
+    lowMem_loss = loss_fn(umax) + loss_fn(uavg) + loss_fn(vmax) + loss_fn(vavg)
+
+    lowMem_loss.backward()
+
+    return fmap1_l0.grad, fmap2_l0.grad
+
+def get_overall_grad_fullMem(fmap1_l0, fmap2_l0, level):
+    fmap1_l0 = fmap1_l0.clone().detach()
+    fmap2_l0 = fmap2_l0.clone().detach()
+
+    fmap1_l0.requires_grad = True
+    fmap2_l0.requires_grad = True
+
+    umax, uavg, vmax, vavg = compute_maxavg_torch(fmap1_l0, fmap2_l0, level)
+
+    torch_loss = loss_fn(umax) + loss_fn(uavg) + loss_fn(vmax) + loss_fn(vavg)
+    
+    torch_loss.backward()
+
+    return fmap1_l0.grad, fmap2_l0.grad
+
+def get_overall_grad_cuda(fmap1_l0, fmap2_l0, level):
+    fmap1_l0 = fmap1_l0.clone().detach()
+    fmap2_l0 = fmap2_l0.clone().detach()
+
+    fmap1_l0.requires_grad = True
+    fmap2_l0.requires_grad = True
+
+    fmap2_lk = pool_fmap_lk(fmap2_l0, level)
+
+    corr_u, corr_v = ComputeMaxArgmaxAvgFunction.apply(fmap1_l0, fmap2_lk)
+
+    umax = corr_u[:,:,:,0]
+    uavg = corr_u[:,:,:,1]
+    vmax = corr_v[:,:,:,0]
+    vavg = corr_v[:,:,:,1]
+
+    cuda_loss = loss_fn(umax) + loss_fn(uavg) + loss_fn(vmax) + loss_fn(vavg)
+    
+    cuda_loss.backward()
+
+    return fmap1_l0.grad, fmap2_l0.grad
+    
+
+def torch_grad_comparison_test():
+    batch, ht, wd, fdim = (2,8,8,7)
+    for level in range(4):
+        print(f"--------------(level {level})--------------")
+        print("forward max difference:")
+        check_forward_pass(batch, ht, wd, fdim, level)
+        print("--------------cumax--------------")
+        test_cumax(batch, ht, wd, fdim, level)
+        print("--------------cuavg--------------")
+        test_cuavg(batch, ht, wd, fdim, level)
+        print("--------------cvmax--------------")
+        test_cvmax(batch, ht, wd, fdim, level)
+        print("--------------cvavg--------------")
+        test_cvavg(batch, ht, wd, fdim, level)
+
+def overall_grad_test():
+    batch, ht, wd, fdim = (2,8,8,7)
+    for level in range(4):
+        
+        fmap1_l0, fmap2_l0 = get_input(batch, ht, wd, fdim)
+        
+        grad_fmap1_fullMem, grad_fmap2_fullMem = get_overall_grad_fullMem(fmap1_l0, fmap2_l0, level)
+        grad_fmap1_lowMem, grad_fmap2_lowMem = get_overall_grad_lowMem(fmap1_l0, fmap2_l0, level)
+        grad_fmap1_cuda, grad_fmap2_cuda = get_overall_grad_cuda(fmap1_l0, fmap2_l0, level)
+        print(f"--------------(level {level})--------------")
+        print(f"--------------loss values--------------")
+        print(grad_fmap1_cuda.abs().max())
+        print(grad_fmap1_lowMem.abs().max())
+        print(grad_fmap1_fullMem.abs().max())
+        print(grad_fmap2_cuda.abs().max())
+        print(grad_fmap2_lowMem.abs().max())
+        print(grad_fmap2_fullMem.abs().max())
+        print(f"--------------loss differences--------------")
+        print((grad_fmap1_cuda-grad_fmap1_fullMem).abs().max())
+        print((grad_fmap2_cuda-grad_fmap2_fullMem).abs().max())
+        print((grad_fmap1_lowMem-grad_fmap1_fullMem).abs().max())
+        print((grad_fmap2_lowMem-grad_fmap2_fullMem).abs().max())
+
+
 if __name__ == "__main__":
-    print("forward max difference:")
-    check_forward_pass()
-    print("--------------cumax--------------")
-    test_cumax()
-    print("--------------cuavg--------------")
-    test_cuavg()
-    print("--------------cvmax--------------")
-    test_cvmax()
-    print("--------------cvavg--------------")
-    test_cvavg()
+    torch_grad_comparison_test()
+    overall_grad_test()

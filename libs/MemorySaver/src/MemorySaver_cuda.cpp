@@ -52,10 +52,42 @@ std::vector<torch::Tensor> compression_forward (
     attention_weights_v);
 }
 
+std::vector<torch::Tensor> max_argmax_avg_backward (
+  at::Tensor img1_features_l0, 
+  at::Tensor img2_features_lk,
+  at::Tensor max_avg_output_u,
+  at::Tensor max_avg_output_v,
+  at::Tensor argmax_output_u,
+  at::Tensor argmax_output_v,
+  at::Tensor grad_MaxAvg_u,
+  at::Tensor grad_MaxAvg_v)
+{
+
+  CHECK_INPUT(img1_features_l0);
+  CHECK_INPUT(img2_features_lk);
+  CHECK_INPUT(max_avg_output_u);
+  CHECK_INPUT(max_avg_output_v);
+  CHECK_INPUT(argmax_output_u);
+  CHECK_INPUT(argmax_output_v);
+  CHECK_INPUT(grad_MaxAvg_u);
+  CHECK_INPUT(grad_MaxAvg_v);
+
+  return max_argmax_avg_cuda_backward(
+    img1_features_l0, 
+    img2_features_lk,
+    max_avg_output_u,
+    max_avg_output_v,
+    argmax_output_u,
+    argmax_output_v,
+    grad_MaxAvg_u,
+    grad_MaxAvg_v);
+}
+
 PYBIND11_MODULE (TORCH_EXTENSION_NAME, MemorySaver)
 {
   MemorySaver.def ("max_avg_forward", &max_avg_forward, "max avg forward (CUDA)");
   MemorySaver.def ("max_argmax_avg_forward", &max_argmax_avg_forward, "max argmax avg forward (CUDA)");
+  MemorySaver.def ("max_argmax_avg_backward", &max_argmax_avg_backward, "max argmax avg backward (CUDA)");
   MemorySaver.def ("compression_forward", &compression_forward, "compression forward (CUDA)");
 }
 

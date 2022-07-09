@@ -19,7 +19,13 @@ std::vector<torch::Tensor> compression_cuda_forward (
 
 std::vector<torch::Tensor> max_argmax_avg_cuda_backward (
 	at::Tensor img1_features_l0, 
-	at::Tensor img2_features_lk);
+  at::Tensor img2_features_lk,
+  at::Tensor max_avg_output_u,
+  at::Tensor max_avg_output_v,
+  at::Tensor argmax_output_u,
+  at::Tensor argmax_output_v,
+  at::Tensor grad_MaxAvg_u,
+  at::Tensor grad_MaxAvg_v);
 
 std::vector<torch::Tensor> compression_cuda_backward (
   at::Tensor img1_features_l0, 

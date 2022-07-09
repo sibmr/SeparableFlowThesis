@@ -50,7 +50,7 @@ class ComputeMaxArgmaxAvgFunction(Function):
         assert(bool(img1_features_l0.is_contiguous()) and bool(img2_features_lk.is_contiguous()))
         with torch.cuda.device_of(img1_features_l0):
             
-            max_avg_output_u, max_avg_output_v, argmax_output_u, argmax_output_v = MemorySaver.max_avg_forward(img1_features_l0, img2_features_lk)
+            max_avg_output_u, max_avg_output_v, argmax_output_u, argmax_output_v = MemorySaver.max_argmax_avg_forward(img1_features_l0, img2_features_lk)
             
             max_avg_output_u = max_avg_output_u.contiguous()
             max_avg_output_v = max_avg_output_v.contiguous()
@@ -66,12 +66,9 @@ class ComputeMaxArgmaxAvgFunction(Function):
         img1_features_l0, img2_features_lk, max_avg_output_u, max_avg_output_v, argmax_output_u, argmax_output_v = ctx.saved_tensors
         assert(bool(grad_MaxAvg_u.is_contiguous()) and bool(grad_MaxAvg_v.is_contiguous()))
         with torch.cuda.device_of(grad_MaxAvg_u):
-
-            grad_fmap1_l0 = img1_features_l0.new_zeros()
-            grad_fmap2_lk = img2_features_lk.new_zeros()
             
-            MemorySaver.max_avg_backward(img1_features_l0, img2_features_lk, max_avg_output_u, max_avg_output_v,
-                argmax_output_u, argmax_output_v, grad_MaxAvg_u, grad_MaxAvg_v, grad_fmap1_l0, grad_fmap2_lk)
+            grad_fmap1_l0, grad_fmap2_lk = MemorySaver.max_argmax_avg_backward(img1_features_l0, img2_features_lk, max_avg_output_u, max_avg_output_v,
+                argmax_output_u, argmax_output_v, grad_MaxAvg_u, grad_MaxAvg_v)
             
             grad_fmap1_l0 = grad_fmap1_l0.contiguous()
             grad_fmap2_lk = grad_fmap2_lk.contiguous()
