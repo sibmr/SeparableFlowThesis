@@ -9,6 +9,7 @@ from typing import Callable
 import torch
 from torch.autograd import Function
 import torch.nn.functional as F
+from torch.utils import benchmark
 
 from libs.MemorySaver.functions.MemorySaver import ComputeMaxArgmaxAvgFunction
 
@@ -488,7 +489,46 @@ def overall_grad_test():
         print((grad_fmap1_lowMem-grad_fmap1_fullMem).abs().max())
         print((grad_fmap2_lowMem-grad_fmap2_fullMem).abs().max())
 
+def benchmark_grad(batch, ht, wd, fdim, level, num_threads=1, label=None, iterations=10, lowMem=False, fullMem=False, cuda=False):
+    fmap1_l0, fmap2_l0 = get_input(batch, ht, wd, fdim)
+    sub_label = f"{(batch, ht, wd, fdim, level)}"
+    t0 = benchmark.Timer(
+        stmt='get_overall_grad_fullMem(fmap1_l0, fmap2_l0, lvl)',
+        setup='from __main__ import get_overall_grad_fullMem',
+        globals={'fmap1_l0' : fmap1_l0, 'fmap2_l0' : fmap2_l0, 'lvl' : level},
+        num_threads=num_threads,
+        label=label,
+        sub_label=sub_label,
+        description='fullMem',
+        )
+    t1 = benchmark.Timer(
+        stmt='get_overall_grad_lowMem(fmap1_l0, fmap2_l0, lvl)',
+        setup='from __main__ import get_overall_grad_lowMem',
+        globals={'fmap1_l0' : fmap1_l0, 'fmap2_l0' : fmap2_l0, 'lvl' : level},
+        num_threads=num_threads,
+        label=label,
+        sub_label=sub_label,
+        description='lowMem',
+        )
+    t2 = benchmark.Timer(
+        stmt='get_overall_grad_cuda(fmap1_l0, fmap2_l0, lvl)',
+        setup='from __main__ import get_overall_grad_cuda',
+        globals={'fmap1_l0' : fmap1_l0, 'fmap2_l0' : fmap2_l0, 'lvl' : level},
+        num_threads=num_threads,
+        label=label,
+        sub_label=sub_label,
+        description='cuda',
+        )
+
+    results = ([t0.timeit(iterations)] if fullMem else []) + ([t1.timeit(iterations)] if lowMem else []) + ([t2.timeit(iterations)] if cuda else [])
+
+    return results
 
 if __name__ == "__main__":
     torch_grad_comparison_test()
     overall_grad_test()
+    # benchmark.Compare(
+    #         benchmark_grad(2,100,200,256,0, label="forward+backward", iterations=10, cuda=True)
+    #     +   benchmark_grad(2,100,200,256,1, label="forward+backward", iterations=10, cuda=True)
+    #     +   benchmark_grad(2,100,200,256,2, label="forward+backward", iterations=10, cuda=True)
+    #     +   benchmark_grad(2,100,200,256,3, label="forward+backward", iterations=10, cuda=True)).print()

@@ -1,7 +1,18 @@
+from pathlib import Path
+import sys
+import os
+from timeit import timeit
+path_root = Path(__file__).parents[1]
+sys.path.append(str(path_root))
+sys.path.append(os.path.join(path_root, "core"))
+
 from typing import Callable
 import torch
 from torch.autograd import Function
 import torch.nn.functional as F
+from torch.utils import benchmark
+
+from libs.MemorySaver.functions.MemorySaver import ComputeSelfCompressionFunction
 
 class CUCompression(Function):
     @staticmethod
@@ -186,9 +197,9 @@ def get_input(batch_size, ht, wd, fdim, val_low=-2, val_high=2):
 
     return img1_features_l0, img2_features_l0
 
-def get_attention(batch_size, ht, wd, htl, wdl, val_low=-2, val_high=2):
-    a_u = torch.rand((batch_size, ht, wd, 1, wdl)).cuda() * (val_high - val_low) + val_low
-    a_v = torch.rand((batch_size, ht, wd, 1, htl)).cuda() * (val_high - val_low) + val_low
+def get_attention(batch_size, ht, wd, htl, wdl, K=1, val_low=-2, val_high=2):
+    a_u = torch.rand((batch_size, ht, wd, K, wdl)).cuda() * (val_high - val_low) + val_low
+    a_v = torch.rand((batch_size, ht, wd, K, htl)).cuda() * (val_high - val_low) + val_low
 
     return a_u, a_v
 
@@ -323,7 +334,91 @@ def gradcheck_cucompression(batch, ht, wd, fdim, level):
 
     return torch.autograd.gradcheck(CUCompression.apply, (fmap1_l0, fmap2_lk, a_u), eps=1e-5)
 
-if __name__ == "__main__":
+def get_overall_grad_lowMem(fmap1_l0, fmap2_l0, a_u, a_v, level):
+    fmap1_l0 = fmap1_l0.clone().detach()
+    fmap2_l0 = fmap2_l0.clone().detach()
+    a_u = a_u.clone().detach()
+    a_v = a_v.clone().detach()
+
+    fmap1_l0.requires_grad = True
+    fmap2_l0.requires_grad = True
+    a_u.requires_grad = True
+    a_v.requires_grad = True
+
+    fmap2_lk = pool_fmap_lk(fmap2_l0, level)
+
+    lowMem_loss = torch.Tensor([0]).cuda()
+
+    _, _, _, K, _ = a_u.shape
+
+    for i in range(K):
+
+        corr_u = CUCompression.apply(fmap1_l0, fmap2_lk, a_u[:,:,:,i:i+1,:])
+    
+        corr_v = CVCompression.apply(fmap1_l0, fmap2_lk, a_v[:,:,:,i:i+1,:])
+    
+        lowMem_loss += loss_fn(corr_u) + loss_fn(corr_v)
+
+    lowMem_loss.backward()
+
+    return fmap1_l0.grad, fmap2_l0.grad, a_u.grad, a_v.grad
+
+def get_overall_grad_fullMem(fmap1_l0, fmap2_l0, a_u, a_v, level):
+    fmap1_l0 = fmap1_l0.clone().detach()
+    fmap2_l0 = fmap2_l0.clone().detach()
+    a_u = a_u.clone().detach()
+    a_v = a_v.clone().detach()
+
+    fmap1_l0.requires_grad = True
+    fmap2_l0.requires_grad = True
+    a_u.requires_grad = True
+    a_v.requires_grad = True
+
+    corr_u, corr_v = compute_compression_torch(fmap1_l0, fmap2_l0, a_u, a_v, level)
+
+    corr_u = corr_u.permute(0,3,4,1,2)
+    corr_v = corr_v.permute(0,3,4,1,2)
+
+    torch_loss = torch.Tensor([0]).cuda()
+
+    _, _, _, K, _ = a_u.shape
+
+    for i in range(K):
+
+        torch_loss += loss_fn(corr_u[:,:,:,i]) + loss_fn(corr_v[:,:,:,i])
+    
+    torch_loss.backward()
+
+    return fmap1_l0.grad, fmap2_l0.grad, a_u.grad, a_v.grad
+
+def get_overall_grad_cuda(fmap1_l0, fmap2_l0, a_u, a_v, level):
+    fmap1_l0 = fmap1_l0.clone().detach()
+    fmap2_l0 = fmap2_l0.clone().detach()
+    a_u = a_u.clone().detach()
+    a_v = a_v.clone().detach()
+
+    fmap1_l0.requires_grad = True
+    fmap2_l0.requires_grad = True
+    a_u.requires_grad = True
+    a_v.requires_grad = True
+
+    fmap2_lk = pool_fmap_lk(fmap2_l0, level)
+
+    corr_u, corr_v = ComputeSelfCompressionFunction.apply(fmap1_l0, fmap2_lk, a_u, a_v)
+
+    cuda_loss = torch.Tensor([0]).cuda()
+
+    _, _, _, K, _ = a_u.shape
+
+    for i in range(K):
+
+        cuda_loss += loss_fn(corr_u[:,:,:,i]) + loss_fn(corr_v[:,:,:,i])
+    
+    cuda_loss.backward()
+
+    return fmap1_l0.grad, fmap2_l0.grad, a_u.grad, a_v.grad
+
+def torch_grad_comparison_test():
     batch, ht, wd, fdim = (2,8,8,5)
     for level in range(4):
         print(f"--------------(level {level})--------------")
@@ -333,3 +428,87 @@ if __name__ == "__main__":
         test_cucompression(batch, ht, wd, fdim, level)
         print("--------------cvcompression--------------")
         test_cvcompression(batch, ht, wd, fdim, level)
+
+def overall_grad_test():
+    batch, ht, wd, fdim = (2,8,8,7)
+    for level in range(4):
+        
+        fmap1_l0, fmap2_l0 = get_input(batch, ht, wd, fdim)
+
+        htl = ht//2**level
+        wdl = wd//2**level
+
+        a_u, a_v = get_attention(batch, ht, wd, htl, wdl, K=2)
+        
+        grad_fmap1_fullMem, grad_fmap2_fullMem, grad_a_u_fullMem,   grad_a_v_fullMem    = get_overall_grad_fullMem  (fmap1_l0, fmap2_l0, a_u, a_v, level)
+        grad_fmap1_lowMem,  grad_fmap2_lowMem,  grad_a_u_lowMem,    grad_a_v_lowMem     = get_overall_grad_lowMem   (fmap1_l0, fmap2_l0, a_u, a_v, level)
+        grad_fmap1_cuda,    grad_fmap2_cuda,    grad_a_u_cuda,      grad_a_v_cuda       = get_overall_grad_cuda     (fmap1_l0, fmap2_l0, a_u, a_v, level)
+        print(f"--------------(level {level})--------------")
+        print(f"--------------loss values--------------")
+        print(grad_fmap1_cuda.abs().max())
+        print(grad_fmap1_lowMem.abs().max())
+        print(grad_fmap1_fullMem.abs().max())
+        print(grad_fmap2_cuda.abs().max())
+        print(grad_fmap2_lowMem.abs().max())
+        print(grad_fmap2_fullMem.abs().max())
+        print(grad_a_u_cuda.abs().max())
+        print(grad_a_u_lowMem.abs().max())
+        print(grad_a_u_fullMem.abs().max())
+        print(grad_a_v_cuda.abs().max())
+        print(grad_a_v_lowMem.abs().max())
+        print(grad_a_v_fullMem.abs().max())
+        print(f"--------------loss differences--------------")
+        print((grad_fmap1_cuda-grad_fmap1_fullMem).abs().max())
+        print((grad_fmap2_cuda-grad_fmap2_fullMem).abs().max())
+        print((grad_fmap1_lowMem-grad_fmap1_fullMem).abs().max())
+        print((grad_fmap2_lowMem-grad_fmap2_fullMem).abs().max())
+        print((grad_a_u_cuda-grad_a_u_fullMem).abs().max())
+        print((grad_a_v_cuda-grad_a_v_fullMem).abs().max())
+        print((grad_a_u_lowMem-grad_a_u_fullMem).abs().max())
+        print((grad_a_v_lowMem-grad_a_v_fullMem).abs().max())
+
+def benchmark_grad(batch, ht, wd, fdim, level, num_threads=1, label=None, iterations=10, lowMem=False, fullMem=False, cuda=False):
+    fmap1_l0, fmap2_l0 = get_input(batch, ht, wd, fdim)
+
+    htl = ht//2**level
+    wdl = wd//2**level
+
+    a_u, a_v = get_attention(batch, ht, wd, htl, wdl, K=2)
+
+    sub_label = f"{(batch, ht, wd, fdim, level)}"
+    t0 = benchmark.Timer(
+        stmt='get_overall_grad_fullMem(fmap1_l0, fmap2_l0, a_u, a_v, lvl)',
+        setup='from __main__ import get_overall_grad_fullMem',
+        globals={'fmap1_l0' : fmap1_l0, 'fmap2_l0' : fmap2_l0, 'a_u' : a_u, 'a_v' : a_v, 'lvl' : level},
+        num_threads=num_threads,
+        label=label,
+        sub_label=sub_label,
+        description='fullMem',
+        )
+    t1 = benchmark.Timer(
+        stmt='get_overall_grad_lowMem(fmap1_l0, fmap2_l0, a_u, a_v, lvl)',
+        setup='from __main__ import get_overall_grad_lowMem',
+        globals={'fmap1_l0' : fmap1_l0, 'fmap2_l0' : fmap2_l0, 'a_u' : a_u, 'a_v' : a_v, 'lvl' : level},
+        num_threads=num_threads,
+        label=label,
+        sub_label=sub_label,
+        description='lowMem',
+        )
+    t2 = benchmark.Timer(
+        stmt='get_overall_grad_cuda(fmap1_l0, fmap2_l0, a_u, a_v, lvl)',
+        setup='from __main__ import get_overall_grad_cuda',
+        globals={'fmap1_l0' : fmap1_l0, 'fmap2_l0' : fmap2_l0, 'a_u' : a_u, 'a_v' : a_v, 'lvl' : level},
+        num_threads=num_threads,
+        label=label,
+        sub_label=sub_label,
+        description='cuda',
+        )
+
+    results = ([t0.timeit(iterations)] if fullMem else []) + ([t1.timeit(iterations)] if lowMem else []) + ([t2.timeit(iterations)] if cuda else [])
+
+    return results
+
+if __name__ == "__main__":
+    #torch_grad_comparison_test()
+    overall_grad_test()
+    benchmark.Compare(benchmark_grad(2,51,117,256,0, fullMem=True, cuda=True)).print()
