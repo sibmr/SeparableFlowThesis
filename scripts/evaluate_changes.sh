@@ -11,11 +11,17 @@
 #$ Validation (clean) EPE: 1.547656, 1px: 0.872142, 3px: 0.946531, 5px: 0.963168
 #$ Validation (final) EPE: 2.891636, 1px: 0.825999, 3px: 0.908737, 5px: 0.932096
 
-python evaluate.py --model './checkpoints/train_originalLongerChairs/models/things.pth' --dataset 'kitti'
+# python evaluate.py --model './checkpoints/train_originalLongerChairs/models/things.pth' --dataset 'kitti'
 #$ Validation KITTI: 5.080982, 17.042665
-python evaluate.py --model './checkpoints/train_originalLongerChairs/models/things.pth' --dataset 'sintel'
+# python evaluate.py --model './checkpoints/train_originalLongerChairs/models/things.pth' --dataset 'sintel'
 #$ Validation (clean) EPE: 1.305591, 1px: 0.898283, 3px: 0.956265, 5px: 0.969143
 #$ Validation (final) EPE: 2.680350, 1px: 0.850911, 3px: 0.919813, 5px: 0.938919
+
+python evaluate.py --model './checkpoints/train_originalChairsCrop/models/things.pth' --dataset 'kitti'
+#$ Validation KITTI: 4.978266, 16.892342
+python evaluate.py --model './checkpoints/train_originalChairsCrop/models/things.pth' --dataset 'sintel'
+#$ Validation (clean) EPE: 1.286973, 1px: 0.898822, 3px: 0.955922, 5px: 0.968877
+#$ Validation (final) EPE: 2.741257, 1px: 0.849379, 3px: 0.917575, 5px: 0.936770
 
 # python evaluate.py --model './checkpoints/train_no4dcorr/models/things.pth' --dataset 'kitti'   --no_4d_corr
 #$ number of parameters: 7602246
