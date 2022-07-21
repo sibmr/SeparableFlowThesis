@@ -429,8 +429,7 @@ def torch_grad_comparison_test():
         print("--------------cvcompression--------------")
         test_cvcompression(batch, ht, wd, fdim, level)
 
-def overall_grad_test():
-    batch, ht, wd, fdim = (2,8,8,7)
+def overall_grad_test(batch, ht, wd, fdim, lowMem=False):
     for level in range(4):
         
         fmap1_l0, fmap2_l0 = get_input(batch, ht, wd, fdim)
@@ -441,31 +440,38 @@ def overall_grad_test():
         a_u, a_v = get_attention(batch, ht, wd, htl, wdl, K=2)
         
         grad_fmap1_fullMem, grad_fmap2_fullMem, grad_a_u_fullMem,   grad_a_v_fullMem    = get_overall_grad_fullMem  (fmap1_l0, fmap2_l0, a_u, a_v, level)
-        grad_fmap1_lowMem,  grad_fmap2_lowMem,  grad_a_u_lowMem,    grad_a_v_lowMem     = get_overall_grad_lowMem   (fmap1_l0, fmap2_l0, a_u, a_v, level)
+        if lowMem:
+            grad_fmap1_lowMem,  grad_fmap2_lowMem,  grad_a_u_lowMem,    grad_a_v_lowMem     = get_overall_grad_lowMem   (fmap1_l0, fmap2_l0, a_u, a_v, level)
         grad_fmap1_cuda,    grad_fmap2_cuda,    grad_a_u_cuda,      grad_a_v_cuda       = get_overall_grad_cuda     (fmap1_l0, fmap2_l0, a_u, a_v, level)
         print(f"--------------(level {level})--------------")
         print(f"--------------loss values--------------")
         print(grad_fmap1_cuda.abs().max())
-        print(grad_fmap1_lowMem.abs().max())
+        if lowMem:
+            print(grad_fmap1_lowMem.abs().max())
         print(grad_fmap1_fullMem.abs().max())
         print(grad_fmap2_cuda.abs().max())
-        print(grad_fmap2_lowMem.abs().max())
+        if lowMem:
+            print(grad_fmap2_lowMem.abs().max())
         print(grad_fmap2_fullMem.abs().max())
         print(grad_a_u_cuda.abs().max())
-        print(grad_a_u_lowMem.abs().max())
+        if lowMem:
+            print(grad_a_u_lowMem.abs().max())
         print(grad_a_u_fullMem.abs().max())
         print(grad_a_v_cuda.abs().max())
-        print(grad_a_v_lowMem.abs().max())
+        if lowMem:
+            print(grad_a_v_lowMem.abs().max())
         print(grad_a_v_fullMem.abs().max())
         print(f"--------------loss differences--------------")
         print((grad_fmap1_cuda-grad_fmap1_fullMem).abs().max())
         print((grad_fmap2_cuda-grad_fmap2_fullMem).abs().max())
-        print((grad_fmap1_lowMem-grad_fmap1_fullMem).abs().max())
-        print((grad_fmap2_lowMem-grad_fmap2_fullMem).abs().max())
+        if lowMem:
+            print((grad_fmap1_lowMem-grad_fmap1_fullMem).abs().max())
+            print((grad_fmap2_lowMem-grad_fmap2_fullMem).abs().max())
         print((grad_a_u_cuda-grad_a_u_fullMem).abs().max())
         print((grad_a_v_cuda-grad_a_v_fullMem).abs().max())
-        print((grad_a_u_lowMem-grad_a_u_fullMem).abs().max())
-        print((grad_a_v_lowMem-grad_a_v_fullMem).abs().max())
+        if lowMem:
+            print((grad_a_u_lowMem-grad_a_u_fullMem).abs().max())
+            print((grad_a_v_lowMem-grad_a_v_fullMem).abs().max())
 
 def benchmark_grad(batch, ht, wd, fdim, level, num_threads=1, label=None, iterations=10, lowMem=False, fullMem=False, cuda=False):
     fmap1_l0, fmap2_l0 = get_input(batch, ht, wd, fdim)
@@ -510,5 +516,5 @@ def benchmark_grad(batch, ht, wd, fdim, level, num_threads=1, label=None, iterat
 
 if __name__ == "__main__":
     #torch_grad_comparison_test()
-    overall_grad_test()
+    overall_grad_test(batch=2,ht=41,wd=67,fdim=81)
     benchmark.Compare(benchmark_grad(2,51,117,256,0, fullMem=True, cuda=True)).print()

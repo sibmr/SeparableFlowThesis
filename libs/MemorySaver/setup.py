@@ -6,9 +6,14 @@ setup(
     name='MemorySaver',
     ext_modules=[
         CUDAExtension(
-            name = 'MemorySaver', 
-            sources = ['src/MemorySaver_cuda.cpp', 'src/MemorySaver_kernel_backward.cu', 'src/MemorySaver_kernel_forward.cu',],
-            extra_compile_args={'cxx':[],'nvcc':[]},            
+            name = 'MemorySaver',
+            sources = [
+                'src/MemorySaver_cuda.cpp',
+                'src/MemorySaver_kernel_forward.cu',
+                'src/MemorySaver_kernel_backward.cu',
+                'src/MemorySaver_kernel_compression_backward.cu',
+                ],
+            extra_compile_args={'cxx':[],'nvcc':[]},
         )
     ],
     cmdclass={
