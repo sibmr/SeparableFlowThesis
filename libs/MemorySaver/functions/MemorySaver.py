@@ -62,7 +62,14 @@ class ComputeMaxArgmaxAvgFunction(Function):
     @staticmethod
     def backward(ctx, grad_MaxAvg_u, grad_MaxAvg_v):
         img1_features_l0, img2_features_lk, argmax_output_u, argmax_output_v = ctx.saved_tensors
+
+        grad_MaxAvg_u = grad_MaxAvg_u.contiguous()
+        grad_MaxAvg_v = grad_MaxAvg_v.contiguous()
+
         assert(bool(grad_MaxAvg_u.is_contiguous()) and bool(grad_MaxAvg_v.is_contiguous()))
+        assert(bool(img1_features_l0.is_contiguous())       and bool(img2_features_lk.is_contiguous()   ))
+        assert(bool(argmax_output_u.is_contiguous())    and bool(argmax_output_v.is_contiguous()))
+        
         with torch.cuda.device_of(grad_MaxAvg_u):
             
             grad_fmap1_l0, grad_fmap2_lk = MemorySaver.max_argmax_avg_backward(img1_features_l0, img2_features_lk,
@@ -108,7 +115,14 @@ class ComputeSelfCompressionFunction(Function):
     @staticmethod
     def backward(ctx, grad_compressed_output_u, grad_compressed_output_v):
         img1_features_l0, img2_features_lk, attention_weights_u, attention_weights_v = ctx.saved_tensors
+        
+        grad_compressed_output_u = grad_compressed_output_u.contiguous()
+        grad_compressed_output_v = grad_compressed_output_v.contiguous()
+        
         assert(bool(grad_compressed_output_u.is_contiguous()) and bool(grad_compressed_output_v.is_contiguous()))
+        assert(bool(img1_features_l0.is_contiguous())       and bool(img2_features_lk.is_contiguous()   ))
+        assert(bool(attention_weights_u.is_contiguous())    and bool(attention_weights_v.is_contiguous()))
+
         with torch.cuda.device_of(grad_compressed_output_u):
             
             gradInput1, gradInput2, gradAttentionU, gradAttentionV = MemorySaver.compression_backward(
