@@ -1,3 +1,4 @@
+from collections import namedtuple
 from pathlib import Path
 import sys
 import os
@@ -466,28 +467,31 @@ def torch_grad_comparison_test():
         print("--------------cvavg--------------")
         test_cvavg(batch, ht, wd, fdim, level)
 
-def overall_grad_test():
-    batch, ht, wd, fdim = (2,8,8,7)
+def overall_grad_test(batch, ht, wd, fdim, lowMem=False):
     for level in range(4):
         
         fmap1_l0, fmap2_l0 = get_input(batch, ht, wd, fdim)
         
         grad_fmap1_fullMem, grad_fmap2_fullMem = get_overall_grad_fullMem(fmap1_l0, fmap2_l0, level)
-        grad_fmap1_lowMem, grad_fmap2_lowMem = get_overall_grad_lowMem(fmap1_l0, fmap2_l0, level)
+        if lowMem:
+            grad_fmap1_lowMem, grad_fmap2_lowMem = get_overall_grad_lowMem(fmap1_l0, fmap2_l0, level)
         grad_fmap1_cuda, grad_fmap2_cuda = get_overall_grad_cuda(fmap1_l0, fmap2_l0, level)
         print(f"--------------(level {level})--------------")
         print(f"--------------loss values--------------")
         print(grad_fmap1_cuda.abs().max())
-        print(grad_fmap1_lowMem.abs().max())
+        if lowMem:
+            print(grad_fmap1_lowMem.abs().max())
         print(grad_fmap1_fullMem.abs().max())
         print(grad_fmap2_cuda.abs().max())
-        print(grad_fmap2_lowMem.abs().max())
+        if lowMem:
+            print(grad_fmap2_lowMem.abs().max())
         print(grad_fmap2_fullMem.abs().max())
         print(f"--------------loss differences--------------")
         print((grad_fmap1_cuda-grad_fmap1_fullMem).abs().max())
         print((grad_fmap2_cuda-grad_fmap2_fullMem).abs().max())
-        print((grad_fmap1_lowMem-grad_fmap1_fullMem).abs().max())
-        print((grad_fmap2_lowMem-grad_fmap2_fullMem).abs().max())
+        if lowMem:
+            print((grad_fmap1_lowMem-grad_fmap1_fullMem).abs().max())
+            print((grad_fmap2_lowMem-grad_fmap2_fullMem).abs().max())
 
 def benchmark_grad(batch, ht, wd, fdim, level, num_threads=1, label=None, iterations=10, lowMem=False, fullMem=False, cuda=False):
     fmap1_l0, fmap2_l0 = get_input(batch, ht, wd, fdim)
@@ -524,9 +528,42 @@ def benchmark_grad(batch, ht, wd, fdim, level, num_threads=1, label=None, iterat
 
     return results
 
+def debug_backward_custom_data(batch, ht, wd, fdim, level):
+    htl = ht // 2**level
+    wdl = wd // 2**level
+    img1_features_l0    = torch.ones((batch, ht,  wd,  fdim)).cuda().contiguous()
+    img2_features_lk    = torch.ones((batch, htl, wdl, fdim)).cuda().contiguous()
+    argmax_output_u     = torch.ones((batch, ht, wd, 1, htl), dtype=torch.int32).cuda().contiguous()
+    argmax_output_v     = torch.ones((batch, ht, wd, 1, wdl), dtype=torch.int32).cuda().contiguous()
+    grad_MaxAvg_u       = torch.ones((batch, ht, wd, 2, htl)).cuda().contiguous()
+    grad_MaxAvg_v       = torch.ones((batch, ht, wd, 2, wdl)).cuda().contiguous()
+
+    img1_features_l0 = img1_features_l0.permute(0,2,3,1)
+    img1_features_l0[:,:,:,:] = torch.arange(ht)
+    img1_features_l0 = img1_features_l0.permute(0,3,1,2).cuda().contiguous()
+    
+    grad_MaxAvg_u[:,:,:,:,:] = torch.arange(htl)
+    grad_MaxAvg_v[:,:,:,:,:] = torch.arange(wdl)
+
+    # img2_features_lk[0,:,2,:] = 1
+    # grad_MaxAvg_u[0, :, :, :, :] = 1
+    # grad_MaxAvg_v[0, :, :, :, :] = 1
+    
+    ctx_dict = {"saved_tensors" : (img1_features_l0, img2_features_lk, argmax_output_u, argmax_output_v)}
+    ctx = namedtuple("ctx", ctx_dict.keys())(*ctx_dict.values())
+    grad_fmap1, grad_fmap2 = ComputeMaxArgmaxAvgFunction.backward(ctx, grad_MaxAvg_u, grad_MaxAvg_v)
+    print(grad_fmap2)
+
+
 if __name__ == "__main__":
-    torch_grad_comparison_test()
-    overall_grad_test()
+    # torch_grad_comparison_test()
+    
+    # debug_backward_custom_data(batch=1, ht=15, wd=15, fdim=3, level=0)
+    overall_grad_test(batch=3, ht=61, wd=121, fdim=117)
+
+    benchmark.Compare(
+            benchmark_grad(2,61,121,256,0, label="forward+backward", iterations=10, fullMem=True, cuda=True)).print()
+
     # benchmark.Compare(
     #         benchmark_grad(2,100,200,256,0, label="forward+backward", iterations=10, cuda=True)
     #     +   benchmark_grad(2,100,200,256,1, label="forward+backward", iterations=10, cuda=True)

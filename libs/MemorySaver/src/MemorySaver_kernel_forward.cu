@@ -318,8 +318,8 @@ __global__ void max_argmax_avg_forward_kernel_optimized_arch_indep (
   const torch::PackedTensorAccessor32<scalar_t,4,torch::RestrictPtrTraits> img2_features_lk,
   torch::PackedTensorAccessor32<scalar_t,5,torch::RestrictPtrTraits> max_avg_output_u,
   torch::PackedTensorAccessor32<scalar_t,5,torch::RestrictPtrTraits> max_avg_output_v,
-  torch::PackedTensorAccessor32<scalar_t,5,torch::RestrictPtrTraits> argmax_output_u,
-  torch::PackedTensorAccessor32<scalar_t,5,torch::RestrictPtrTraits> argmax_output_v)
+  torch::PackedTensorAccessor32<int32_t,5,torch::RestrictPtrTraits> argmax_output_u,
+  torch::PackedTensorAccessor32<int32_t,5,torch::RestrictPtrTraits> argmax_output_v)
 {
 
   const int B = img1_features_l0.size(0); // batch size
@@ -355,11 +355,11 @@ __global__ void max_argmax_avg_forward_kernel_optimized_arch_indep (
   __shared__ scalar_t fcache2[BLOCK_H][BLOCK_W][FEATURE_SPLIT_SIZE];
   // 3 * 512 = 1536 Bytes
   __shared__ scalar_t uMax[BLOCK_H][BLOCK_W][BLOCK_H];
-  __shared__ scalar_t uArgmax[BLOCK_H][BLOCK_W][BLOCK_H];
+  __shared__ int32_t uArgmax[BLOCK_H][BLOCK_W][BLOCK_H];
   __shared__ scalar_t uAvg[BLOCK_H][BLOCK_W][BLOCK_H];
   // 3 * 1024 = 3072 Bytes
   __shared__ scalar_t vMax[BLOCK_H][BLOCK_W][BLOCK_W];
-  __shared__ scalar_t vArgmax[BLOCK_H][BLOCK_W][BLOCK_W];
+  __shared__ int32_t vArgmax[BLOCK_H][BLOCK_W][BLOCK_W];
   __shared__ scalar_t vAvg[BLOCK_H][BLOCK_W][BLOCK_W];
 
   // references into relevant array dimensions for this thread
@@ -374,10 +374,10 @@ __global__ void max_argmax_avg_forward_kernel_optimized_arch_indep (
   // pointers into relevant array dimensions for this thread
   scalar_t (* corr_ref) [BLOCK_W] = corr [threadIdx.x][threadIdx.y];
   scalar_t * uMax_ref = uMax [threadIdx.x][threadIdx.y];
-  scalar_t * uArgmax_ref = uArgmax [threadIdx.x][threadIdx.y];
+  int32_t * uArgmax_ref = uArgmax [threadIdx.x][threadIdx.y];
   scalar_t * uAvg_ref = uAvg [threadIdx.x][threadIdx.y];
   scalar_t * vMax_ref = vMax [threadIdx.x][threadIdx.y];
-  scalar_t * vArgmax_ref = vArgmax [threadIdx.x][threadIdx.y];
+  int32_t * vArgmax_ref = vArgmax [threadIdx.x][threadIdx.y];
   scalar_t * vAvg_ref = vAvg [threadIdx.x][threadIdx.y];
   
   bool withinBoundsHc0Wc0 = within_bounds(hc0, wc0, H1, W1);
@@ -992,8 +992,9 @@ std::vector<torch::Tensor> max_argmax_avg_cuda_forward (
     }, 
     3);
 
-  auto argmax_output_u = torch::zeros({B, H1, W1, 1, H2}, opts);
-  auto argmax_output_v = torch::zeros({B, H1, W1, 1, W2}, opts);
+  auto optionsInt = torch::TensorOptions(opts).dtype(torch::kInt32);
+  auto argmax_output_u = torch::zeros({B, H1, W1, 1, H2}, optionsInt);
+  auto argmax_output_v = torch::zeros({B, H1, W1, 1, W2}, optionsInt);
   
   // number of blocks
   // shape: (batch, (ht+4-1)/4, (wd+8-1)/8) = (batch, ceil(ht/4), ceil(ht/8))
@@ -1018,8 +1019,8 @@ std::vector<torch::Tensor> max_argmax_avg_cuda_forward (
     img2_features_lk.packed_accessor32<float,4,torch::RestrictPtrTraits>(),
     max_avg_output_u.packed_accessor32<float,5,torch::RestrictPtrTraits>(),
     max_avg_output_v.packed_accessor32<float,5,torch::RestrictPtrTraits>(),
-    argmax_output_u.packed_accessor32<float,5,torch::RestrictPtrTraits>(),
-    argmax_output_v.packed_accessor32<float,5,torch::RestrictPtrTraits>()
+    argmax_output_u.packed_accessor32<int32_t,5,torch::RestrictPtrTraits>(),
+    argmax_output_v.packed_accessor32<int32_t,5,torch::RestrictPtrTraits>()
   );
 
   // cudaError_t err = cudaThreadSynchronize();
