@@ -1,3 +1,4 @@
+from collections import namedtuple
 from pathlib import Path
 import sys
 import os
@@ -514,7 +515,41 @@ def benchmark_grad(batch, ht, wd, fdim, level, num_threads=1, label=None, iterat
 
     return results
 
+def debug_backward_custom_data(batch, ht, wd, fdim, level):
+    htl = ht // 2**level
+    wdl = wd // 2**level
+    img1_features_l0    = torch.ones((batch, ht,  wd,  fdim)).cuda().contiguous()
+    img2_features_lk    = torch.ones((batch, htl, wdl, fdim)).cuda().contiguous()
+    attention_weights_u     = torch.ones((batch, ht, wd, 2, wdl)).cuda().contiguous()
+    attention_weights_v     = torch.ones((batch, ht, wd, 2, htl)).cuda().contiguous()
+    grad_compression_u       = torch.ones((batch, ht, wd, 2, htl)).cuda().contiguous()
+    grad_compression_v       = torch.ones((batch, ht, wd, 2, wdl)).cuda().contiguous()
+
+    # for i in range(wd):
+    #     attention_weights_u[:,i%ht,i,:,:] = 0
+    #     attention_weights_v[:,i%ht,i,:,:] = 0
+
+
+    # img1_features_l0 = img1_features_l0.permute(0,2,3,1)
+    # img1_features_l0[:,:,:,:] = torch.arange(ht)
+    # img1_features_l0 = img1_features_l0.permute(0,3,1,2).cuda().contiguous()
+    
+    # grad_MaxAvg_u[:,:,:,:,:] = torch.arange(htl)
+    # grad_MaxAvg_v[:,:,:,:,:] = torch.arange(wdl)
+
+    # img2_features_lk[0,:,2,:] = 1
+    # grad_MaxAvg_u[0, :, :, :, :] = 1
+    # grad_MaxAvg_v[0, :, :, :, :] = 1
+    
+    ctx_dict = {"saved_tensors" : (img1_features_l0, img2_features_lk, attention_weights_u, attention_weights_v)}
+    ctx = namedtuple("ctx", ctx_dict.keys())(*ctx_dict.values())
+    grad_fmap1, grad_fmap2, grad_attention_u, grad_attention_v = ComputeSelfCompressionFunction.backward(ctx, grad_compression_u, grad_compression_v)
+    print(grad_attention_v)
+    print(grad_attention_v.shape)
+    print(grad_attention_v[0,:,:,0,:])
+
 if __name__ == "__main__":
     #torch_grad_comparison_test()
-    overall_grad_test(batch=2,ht=41,wd=67,fdim=81)
-    benchmark.Compare(benchmark_grad(2,51,117,256,0, fullMem=True, cuda=True)).print()
+    overall_grad_test(batch=1,ht=128,wd=16,fdim=4)
+    #debug_backward_custom_data(1,5,8,4,0)
+    #benchmark.Compare(benchmark_grad(2,51,117,256,0, fullMem=True, cuda=True)).print()

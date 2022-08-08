@@ -13,7 +13,11 @@ setup(
                 'src/MemorySaver_kernel_max_avg_argmax_backward.cu',
                 'src/MemorySaver_kernel_compression_backward.cu',
                 ],
-            extra_compile_args={'cxx':[],'nvcc':[]},
+            extra_compile_args={
+                'cxx':[
+                ],
+                'nvcc':[
+                ]},
         )
     ],
     cmdclass={
