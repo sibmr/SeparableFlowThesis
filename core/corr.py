@@ -3,7 +3,8 @@ import torch.nn.functional as F
 import torch.nn as nn
 from utils.utils import bilinear_sampler, coords_grid
 from libs.GANet.modules.GANet import NLFMax, NLFIter
-from libs.MemorySaver.functions import ComputeMaxAvgFunction, ComputeSelfCompressionFunction
+from libs.MemorySaver.functions import ComputeMaxAvgFunction, ComputeMaxArgmaxAvgFunction
+from libs.MemorySaver.functions import ComputeSelfCompressionFunction
 
 try:
     import alt_cuda_corr
@@ -330,10 +331,15 @@ class AlternateCorrBlock:
         return corr / torch.sqrt(torch.tensor(dim).float())
 
 class AlternateCorrBlockSepflow:
-    def __init__(self, fmap1, fmap2, guid, num_levels=4, radius=4):
+    def __init__(self, fmap1, fmap2, guid, num_levels=4, radius=4, support_backward=False):
 
         if guid is not None:
             raise Exception("Cannot use NLF while not storing the 4d correlation volume")
+
+        if support_backward:
+            self.max_avg_function = ComputeMaxArgmaxAvgFunction
+        else:
+            self.max_avg_function = ComputeMaxAvgFunction
 
         self.num_levels = num_levels
         self.radius = radius
@@ -386,7 +392,7 @@ class AlternateCorrBlockSepflow:
             fmap2 = self.pyramid[i].permute(0,2,3,1).contiguous()
             
             # shape: (batch, ht, wd, 2, ht/2**i), (batch, ht, wd, 2, wd/2**i)
-            maxavg_u, maxavg_v = ComputeMaxAvgFunction.apply(fmap1, fmap2)
+            maxavg_u, maxavg_v = self.max_avg_function.apply(fmap1, fmap2)
             
             # shape: (batch, ht, wd, 2, ht/2**i) -> (batch, 2, ht/2**i, ht, wd)
             sep_v = maxavg_u.permute(0,3,4,1,2).contiguous()

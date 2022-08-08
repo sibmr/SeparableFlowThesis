@@ -81,6 +81,10 @@ parser.add_argument('--no_4d_agg', action='store_true', help='whether to aggrega
 parser.add_argument("--run_name", type=str, default="unnamed",
                     help="name used to identify the current run of the script")
 
+# Use alternate implementation that does not store 4d correlation volume
+parser.add_argument('--alternate_corr', action='store_true', help='use memory-efficent correlation implementation without backward pass support')
+parser.add_argument('--alternate_corr_backward', action='store_true', help='use memory-efficent correlation implementation supporting backward pass')
+
 # Experiment (Multi-Training) settings
 parser.add_argument("--experiment_name", type=str, default="unnamed",
                     help="name used to identify the current experiment")

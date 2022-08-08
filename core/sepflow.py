@@ -244,6 +244,9 @@ class SepFlow(nn.Module):
         if 'alternate_corr' not in self.args:
             self.args.alternate_corr = False
 
+        if 'alternate_corr_backward' not in self.args:
+            self.args.alternate_corr_backward = False
+        
         # feature network, context network, and update block
 
         self.fnet = BasicEncoder(output_dim=256, norm_fn='instance', dropout=args.dropout)        
@@ -326,8 +329,9 @@ class SepFlow(nn.Module):
         # guidance: 4 directions, with 5 weights each (summing to 1)
         guid, guid_u, guid_v = self.guidance(fmap1.detach(), image1)
         
-        if self.args.alternate_corr:
-            corr_fn = AlternateCorrBlockSepflow(fmap1, fmap2, guid, radius=self.args.corr_radius)
+        if self.args.alternate_corr or self.args.alternate_corr_backward:
+            corr_fn = AlternateCorrBlockSepflow(fmap1, fmap2, guid, radius=self.args.corr_radius,
+                                                support_backward=self.args.alternate_corr_backward)
         else:
             # correlation now seems to use guidance
             # corr_fn used for both 4d and 3d cost volume computation
