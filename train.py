@@ -75,19 +75,33 @@ parser.add_argument('--clip', type=float, default=1.0)
 parser.add_argument('--dropout', type=float, default=0.0)
 parser.add_argument('--gamma', type=float, default=0.8, help='exponential weighting')
 parser.add_argument('--add_noise', action='store_true')
+
+
+# Model modification settings
 parser.add_argument('--no_4d_corr', action='store_true', help='whether to use the 4d correlation volume directly')
 parser.add_argument('--num_corr_channels', type=int, default=2)
 parser.add_argument('--no_4d_agg', action='store_true', help='whether to aggregate the 4d correlation volume')
-parser.add_argument("--run_name", type=str, default="unnamed",
-                    help="name used to identify the current run of the script")
+# Global Motion aggregation settings
+parser.add_argument('--use_gma', action='store_true', help='whether to use Global Motion Aggregation')
+parser.add_argument('--position_only', default=False, action='store_true',
+                        help='only use position-wise attention')
+parser.add_argument('--position_and_content', default=False, action='store_true',
+                    help='use position and content-wise attention')
+parser.add_argument('--num_heads', default=1, type=int,
+                    help='number of heads in attention and aggregation')
+
 
 # Use alternate implementation that does not store 4d correlation volume
 parser.add_argument('--alternate_corr', action='store_true', help='use memory-efficent correlation implementation without backward pass support')
 parser.add_argument('--alternate_corr_backward', action='store_true', help='use memory-efficent correlation implementation supporting backward pass')
 
+
 # Experiment (Multi-Training) settings
+parser.add_argument("--run_name", type=str, default="unnamed",
+                    help="name used to identify the current run of the script")
 parser.add_argument("--experiment_name", type=str, default="unnamed",
                     help="name used to identify the current experiment")
+
 
 MAX_FLOW = 400
 SUM_FREQ = 100

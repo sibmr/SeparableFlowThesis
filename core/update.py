@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from gma import Aggregate
 
 class FlowHead(nn.Module):
     def __init__(self, input_dim=128, hidden_dim=256):
@@ -194,7 +195,13 @@ class BasicUpdateBlock(nn.Module):
         else:
             self.encoder = BasicMotionEncoder(args)
         
-        self.gru = SepConvGRU(hidden_dim=hidden_dim, input_dim=128+hidden_dim)
+        self.gma_aggregator_net = None
+        gru_input_dim = 128+hidden_dim
+        if self.args.use_gma:
+            self.gma_aggregator_net = Aggregate(args=self.args, dim=128, dim_head=128, heads=self.args.num_heads)
+            gru_input_dim = 128+hidden_dim+hidden_dim
+
+        self.gru = SepConvGRU(hidden_dim=hidden_dim, input_dim=gru_input_dim)
         self.flow_head = FlowHead(hidden_dim, hidden_dim=256)
 
         self.mask = nn.Sequential(
@@ -202,7 +209,7 @@ class BasicUpdateBlock(nn.Module):
             nn.ReLU(inplace=True),
             nn.Conv2d(256, 64*9, 1, padding=0))
 
-    def forward(self, net, inp, corr, corr1, corr2, flow, upsample=True):
+    def forward(self, net, inp, corr, corr1, corr2, flow, gma_attention, upsample=True):
         
         # motion features include flow and a 4d and 3d motion representation
         # compared to raft, includes additional corr1 and corr2 volume
@@ -211,8 +218,13 @@ class BasicUpdateBlock(nn.Module):
         else:
             motion_features = self.encoder(flow, corr, corr1, corr2)
             
-        # same combining context and motion features, same as raft
-        inp = torch.cat([inp, motion_features], dim=1)
+        if self.args.use_gma:
+            # context, motion and aggregated global motion features
+            motion_features_global = self.gma_aggregator_net(gma_attention, motion_features)
+            inp = torch.cat([inp, motion_features, motion_features_global], dim=1)
+        else:
+            # same combining context and motion features, same as raft
+            inp = torch.cat([inp, motion_features], dim=1)
 
         net = self.gru(net, inp)
         delta_flow = self.flow_head(net)

@@ -7,6 +7,7 @@ from update import BasicUpdateBlock, SmallUpdateBlock
 from extractor import BasicEncoder, SmallEncoder
 from corr import CorrBlock, CorrBlock1D, AlternateCorrBlockSepflow
 from cost_agg import CostAggregation
+from gma import Attention
 from utils.utils import bilinear_sampler, coords_grid, upflow8
 
 try:
@@ -256,6 +257,10 @@ class SepFlow(nn.Module):
         self.cost_agg1 = CostAggregation(in_channel=args.num_corr_channels*args.corr_levels)
         self.cost_agg2 = CostAggregation(in_channel=args.num_corr_channels*args.corr_levels)
 
+        self.gma_attention_net = None
+        if args.use_gma:
+            self.gma_attention_net = Attention(args=self.args, dim=cdim, heads=self.args.num_heads, max_pos_size=160, dim_head=cdim)
+    
         if args.num_corr_channels > 2:
             self.attention1 = torch.nn.Conv3d(2, args.num_corr_channels-2, 3, padding=1)
             self.attention2 = torch.nn.Conv3d(2, args.num_corr_channels-2, 3, padding=1)
@@ -338,11 +343,16 @@ class SepFlow(nn.Module):
             corr_fn = CorrBlock(fmap1, fmap2, guid, radius=self.args.corr_radius)
 
         # context features calculation:
-        # hidden state initialization + context features
+        # hidden state initialization (net) + context features (inp)
         cnet = self.cnet(image1)
         net, inp = torch.split(cnet, [hdim, cdim], dim=1)
         net = torch.tanh(net)
         inp = torch.relu(inp)
+        
+        gma_attention = None
+        if self.gma_attention_net is not None:
+            # query and key features calculated by attention network from context features
+            gma_attention = self.gma_attention_net(inp)
         
         # calculated C_u and C_v
         # They consist of the max and avg of the u column/ v row
@@ -404,7 +414,7 @@ class SepFlow(nn.Module):
             
             # apply update block: flow refinement
             with autocast(enabled=self.args.mixed_precision):
-                net, up_mask, delta_flow = self.update_block(net, inp, corr, corr1, corr2, flow)
+                net, up_mask, delta_flow = self.update_block(net, inp, corr, corr1, corr2, flow, gma_attention)
 
             # F(t+1) = F(t) + \Delta(t)
             coords1 = coords1 + delta_flow
