@@ -122,8 +122,11 @@ class Attention(nn.Module):
         # calculates query and key features for each pixel and head
         self.to_qk = nn.Conv2d(dim, inner_dim * 2, 1, bias=False)
         
-        # calculates query-position similarity (position embedding used like key)
-        self.pos_emb = RelPosEmb(max_pos_size, dim_head)
+        # when position embedding is not used, pos_emb is not connected to the loss
+        # this condition is added because in the above case, torch throws an exception
+        if self.args.position_only or self.args.position_and_content:
+            # calculates query-position similarity (position embedding used like key)
+            self.pos_emb = RelPosEmb(max_pos_size, dim_head)
 
     def forward(self, fmap):
         heads, b, c, h, w = self.heads, *fmap.shape

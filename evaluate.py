@@ -233,6 +233,13 @@ if __name__ == '__main__':
     parser.add_argument('--no_4d_corr', action='store_true', help='whether to use the 4d correlation volume directly')
     parser.add_argument('--num_corr_channels', type=int, default=2)
     parser.add_argument('--no_4d_agg', action='store_true', help='whether to use the 4d correlation volume directly')
+    parser.add_argument('--use_gma', action='store_true', help='whether to use Global Motion Aggregation')
+    parser.add_argument('--position_only', default=False, action='store_true',
+                            help='only use position-wise attention')
+    parser.add_argument('--position_and_content', default=False, action='store_true',
+                        help='use position and content-wise attention')
+    parser.add_argument('--num_heads', default=1, type=int,
+                        help='number of heads in attention and aggregation')
     args = parser.parse_args()
 
     model = torch.nn.DataParallel(SepFlow(args))
