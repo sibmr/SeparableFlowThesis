@@ -1,0 +1,7 @@
+# exact same arguments as original implementation, except path related
+python train.py --experiment_name='train_no4daggGMA' --stage='chairs'                                                               --run_name='chairs' --gpu='0,1,2,3' --num_steps 100000 --batchSize 12 --testBatchSize=4 --lr=0.0004   --image_size 320 448  --wdecay 0.0001   --freeze_bn=0 --gamma=0.8 --no_4d_corr --num_corr_channels=4 --no_4d_agg --use_gma   --start_epoch=0  --thread=16 
+python train.py --experiment_name='train_no4daggGMA' --stage='things' --weights 'checkpoints/train_no4daggGMA/models/chairs.pth'    --run_name='things' --gpu='0,1,2,3' --num_steps 100000 --batchSize 8  --testBatchSize=4 --lr 0.000125 --image_size 448 768  --wdecay 0.0001   --freeze_bn=1 --gamma=0.8 --no_4d_corr --num_corr_channels=4 --no_4d_agg --use_gma     
+
+# Only C+T for now
+# python train.py --experiment_name='train_no4daggGMA' --stage='sintel' --weights 'checkpoints/train_no4daggGMA/things.pth' --run_name='sintel' --gpu='0,1,2,3' --num_steps 100000 --batchSize 8  --testBatchSize=4 --lr 0.000125 --image_size 384 832  --wdecay 0.00001  --freeze_bn=1 --gamma=0.85 --no_4d_corr --num_corr_channels=4 --no_4d_agg --use_gma
+# python train.py --experiment_name='train_no4daggGMA' --stage='kitti'  --weights 'checkpoints/train_no4daggGMA/sintel.pth' --run_name='kitti'  --gpu='0,1,2,3' --num_steps 50000  --batchSize 8  --testBatchSize=4 --lr 0.0001   --image_size 320 1024 --wdecay 0.00001  --freeze_bn=1 --gamma=0.85 --no_4d_corr --num_corr_channels=4 --no_4d_agg --use_gma
