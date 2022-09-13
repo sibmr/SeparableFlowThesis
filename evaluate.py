@@ -223,6 +223,18 @@ def validate_kitti2012(model, iters=24):
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
+def count_parameters_duplicate_avoided(model, only_trainable=True):
+    """
+    Returns the total number of parameters used by `model` (only counting
+    shared parameters once); if `only_trainable` is True, then only
+    includes parameters with `requires_grad = True`
+    """
+    parameters = list(model.parameters())
+    if only_trainable:
+        parameters = [p for p in parameters if p.requires_grad]
+    unique = {p.data_ptr(): p for p in parameters}.values()
+    return sum(p.numel() for p in unique)
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--model', help="restore checkpoint")
@@ -244,6 +256,7 @@ if __name__ == '__main__':
 
     model = torch.nn.DataParallel(SepFlow(args))
     print(f"number of parameters: {count_parameters(model)}")
+    print(f"number of parameters (no dup): {count_parameters_duplicate_avoided(model)}")
     checkpoint = torch.load(args.model)
     msg = model.load_state_dict(checkpoint['state_dict'], strict=False)
     print(msg)
