@@ -44,6 +44,8 @@ def sequence_loss(flow_preds, flow_gt, valid, gamma=0.8, max_flow=400):
     for i in range(n_predictions - 3):
         weights.append( base + gamma**(n_predictions - i - 4) )
 
+
+
     # loss based on weights array
     for i in range(n_predictions):
         i_loss = (flow_preds[i] - flow_gt).abs()
@@ -127,6 +129,7 @@ def create_model(opt_args={}) -> torch.nn.Module:
         "no_4d_corr" : False,
         "num_corr_channels" : 2,
         "no_4d_agg" : False,
+        "use_gma" : False,
         "run_name" : "unnamed",
         "experiment_name" : "unnamed"
     }
@@ -186,7 +189,7 @@ def do_optimization_step(model, img1, img2, target, valid):
     target = target.clone().detach()
     valid = valid.clone().detach()
 
-    optimizer = torch.optim.SGD(model.parameters(), 0.01)
+    optimizer = torch.optim.SGD(model.parameters(), 0.1)
     optimizer.zero_grad()
 
     flow_preds = model.forward(img1, img2)
@@ -218,19 +221,29 @@ def dict_compare(dict1, dict2):
         print(dict1)
         print(dict2)
 
-def list_compare(params1, params2):
+def compare_fn(t1 : torch.Tensor, t2 : torch.Tensor):
+    abs_err = (t1-t2).abs().max()
+    max_abs_val = torch.max(t1.abs().max(), t2.abs().max())
+    rel_err = abs_err / max_abs_val
+    
+    return abs_err, rel_err
+
+def list_compare(params1, params2, compare_grad=False):
     lparams1 = list(params1)
     lparams2 = list(params2)
     for i in range(len(lparams1)):
         t1 = lparams1[i]
         t2 = lparams2[i]
-        abs_err = (t1-t2).abs().max()
-        max_abs_val = torch.max(t1.abs().max(), t2.abs().max())
-        rel_err = abs_err / max_abs_val
+
+        if compare_grad:    
+            t1 = t1.grad
+            t2 = t2.grad
+        
+        abs_err, rel_err = compare_fn(t1, t2)
+        
         print(f"abs {abs_err} rel {rel_err}")
 
-if __name__ == "__main__":
-    
+def do_tests():
     opt_args_no_memsave = {
             "alternate_corr" : False,
             "alternate_corr_backward" : False,
@@ -253,23 +266,166 @@ if __name__ == "__main__":
     target = torch.rand((batch, 2, ht, wd)).cuda()
     valid = torch.full((batch, ht, wd), True).cuda()
 
-    model = get_model(opt_args_no_memsave, state_dict).cuda().train()
     alternate_model = get_model(opt_args_memsave, state_dict).cuda().train()
 
     img1_grad, img2_grad = get_gradient(model, img1, img2, target, valid)
     img1_grad_alt, img2_grad_alt = get_gradient(alternate_model, img1, img2, target, valid)
     
-    print(img1_grad.abs().max())
-    print(img1_grad_alt.abs().max())
-    print(img2_grad.abs().max())
-    print(img2_grad_alt.abs().max())
     print("absolute maximum difference between gradients")
-    print((img1_grad-img1_grad_alt).abs().max())
-    print((img2_grad-img2_grad_alt).abs().max())
+    abs_err, rel_err = compare_fn(img1_grad, img1_grad_alt)
+    print(f"abs {abs_err} rel {rel_err}")
+    abs_err, rel_err = compare_fn(img2_grad, img2_grad_alt)
+    print(f"abs {abs_err} rel {rel_err}")
 
+    print("compare fnet grad:")
+    list_compare(model.fnet.parameters(), alternate_model.fnet.parameters(), compare_grad=True)
 
     do_optimization_step(model, img1, img2, target, valid)
     do_optimization_step(alternate_model, img1, img2, target, valid)
 
-    print("compare fnet params:")
+    print("compare fnet params after optimization:")
     list_compare(model.fnet.parameters(), alternate_model.fnet.parameters())
+
+def measure_mem_fw(model, image_tensor_size, refine_iters=12):
+    batch, channels, ht, wd = image_tensor_size
+    img1 = torch.rand((batch, channels, ht, wd)).cuda()
+    img2 = torch.rand((batch, channels, ht, wd)).cuda()
+    target = torch.rand((batch, 2, ht, wd)).cuda()
+    valid = torch.full((batch, ht, wd), True).cuda()
+
+    model.eval()
+    used_mem_list = []
+    with torch.no_grad():
+        loss = 0
+        for i in range(10):
+            low_flow, flow_pred = model(img1, img2, iters=refine_iters)
+            loss += (flow_pred-target).abs().sum().detach().cpu().item()
+
+            free_mem, total_mem = torch.cuda.mem_get_info()
+            used_mem_list.append(total_mem-free_mem)
+
+            torch.cuda.synchronize()
+
+    print(f"min: {min(used_mem_list)/((1024)**3)} max: {max(used_mem_list)/((1024)**3)}")
+
+def measure_mem_fw_bw(model, image_tensor_size, refine_iters=12):
+    batch, channels, ht, wd = image_tensor_size
+    img1 = torch.rand((batch, channels, ht, wd)).cuda()
+    img2 = torch.rand((batch, channels, ht, wd)).cuda()
+    target = torch.rand((batch, 2, ht, wd)).cuda()
+    valid = torch.full((batch, ht, wd), True).cuda()
+
+    model.train()
+    used_mem_list = []
+    for i in range(10):
+        flow_preds = model(img1, img2, iters=refine_iters)
+        loss, metrics = sequence_loss(flow_preds, target, valid)
+
+        free_mem, total_mem = torch.cuda.mem_get_info()
+        used_mem_list.append(total_mem-free_mem)
+
+        loss.backward()
+
+        free_mem, total_mem = torch.cuda.mem_get_info()
+        used_mem_list.append(total_mem-free_mem)
+
+        torch.cuda.synchronize()
+
+    print(f"min: {min(used_mem_list)/((1024)**3)} max: {max(used_mem_list)/((1024)**3)}")
+
+
+def measure_normal_fw(do_bw_pass=False, img_tensor_size=(12,3,320,448), refine_iters=12):
+    opt_args = {
+        "alternate_corr" : False,
+        "alternate_corr_backward" : False,
+        "no_4d_corr" : True,
+        "num_corr_channels" : 4,
+        "no_4d_agg" : True,
+        "iters" : refine_iters,
+        }
+    model = get_model(opt_args).cuda().train()
+    if do_bw_pass:
+        measure_mem_fw_bw(model, img_tensor_size, refine_iters=refine_iters)
+    else:
+        measure_mem_fw(model, img_tensor_size, refine_iters=refine_iters)
+
+
+def measure_alt_fw(do_bw_pass=False, img_tensor_size=(12,3,320,448), refine_iters=12):
+    opt_args = {
+        "alternate_corr_backward" : True,
+        "no_4d_corr" : True,
+        "num_corr_channels" : 4,
+        "no_4d_agg" : True,
+        "iters" : refine_iters,
+        }
+    model = get_model(opt_args).cuda().train()
+    if do_bw_pass:
+        measure_mem_fw_bw(model, img_tensor_size, refine_iters=refine_iters)
+    else:
+        measure_mem_fw(model, img_tensor_size, refine_iters=refine_iters)
+
+def measure_all():
+    print("12,3,320,448")
+    measure_normal_fw(do_bw_pass=False, img_tensor_size=(12,3,320,448))
+    torch.cuda.empty_cache()
+    measure_alt_fw   (do_bw_pass=False, img_tensor_size=(12,3,320,448))
+    torch.cuda.empty_cache()
+    measure_normal_fw(do_bw_pass=True , img_tensor_size=(12,3,320,448))
+    torch.cuda.empty_cache()
+    measure_alt_fw   (do_bw_pass=True , img_tensor_size=(12,3,320,448))
+    torch.cuda.empty_cache()
+
+    print("1,3,512,1024")
+    measure_normal_fw(do_bw_pass=False, img_tensor_size=(1,3,512,1024))
+    torch.cuda.empty_cache()
+    measure_alt_fw   (do_bw_pass=False, img_tensor_size=(1,3,512,1024))
+    torch.cuda.empty_cache()
+    measure_normal_fw(do_bw_pass=True , img_tensor_size=(1,3,512,1024))
+    torch.cuda.empty_cache()
+    measure_alt_fw   (do_bw_pass=True , img_tensor_size=(1,3,512,1024))
+    torch.cuda.empty_cache()
+
+    print("2,3,512,1024")
+    measure_normal_fw(do_bw_pass=False, img_tensor_size=(2,3,512,1024))
+    torch.cuda.empty_cache()
+    measure_alt_fw   (do_bw_pass=False, img_tensor_size=(2,3,512,1024))
+    torch.cuda.empty_cache()
+    measure_normal_fw(do_bw_pass=True , img_tensor_size=(2,3,512,1024))
+    torch.cuda.empty_cache()
+    measure_alt_fw   (do_bw_pass=True , img_tensor_size=(2,3,512,1024))
+
+def measure_inference_bs1():
+    print("all inference batch size 1 - 12 iters")
+    torch.cuda.empty_cache()
+    measure_normal_fw(do_bw_pass=False, img_tensor_size=(1,3,320, 448))
+    torch.cuda.empty_cache()
+    measure_alt_fw   (do_bw_pass=False, img_tensor_size=(1,3,320, 448))
+    torch.cuda.empty_cache()
+    measure_normal_fw(do_bw_pass=False, img_tensor_size=(1,3,512,1024))
+    torch.cuda.empty_cache()
+    measure_alt_fw   (do_bw_pass=False, img_tensor_size=(1,3,512,1024))
+
+    print("all inference batch size 1 - 32 iters")
+    torch.cuda.empty_cache()
+    measure_normal_fw(do_bw_pass=False, img_tensor_size=(1,3,320, 448), refine_iters=32)
+    torch.cuda.empty_cache()
+    measure_alt_fw   (do_bw_pass=False, img_tensor_size=(1,3,320, 448), refine_iters=32)
+    torch.cuda.empty_cache()
+    measure_normal_fw(do_bw_pass=False, img_tensor_size=(1,3,512,1024), refine_iters=32)
+    torch.cuda.empty_cache()
+    measure_alt_fw   (do_bw_pass=False, img_tensor_size=(1,3,512,1024), refine_iters=32)
+
+def measure_more_refine_iters():
+    print("1,3,512,1024")
+    torch.cuda.empty_cache()
+    measure_normal_fw(do_bw_pass=True , img_tensor_size=(1,3,512,1024),refine_iters=32)
+    torch.cuda.empty_cache()
+    measure_alt_fw   (do_bw_pass=True , img_tensor_size=(1,3,512,1024),refine_iters=32)
+    torch.cuda.empty_cache()
+
+
+if __name__ == "__main__":
+    # do_tests()
+    # measure_all()
+    measure_inference_bs1()
+    measure_more_refine_iters()

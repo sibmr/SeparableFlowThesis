@@ -1,5 +1,9 @@
+from pathlib import Path
 import sys
-sys.path.append('core')
+import os
+path_root = Path(__file__).parents[1]
+sys.path.append(str(path_root))
+sys.path.append(os.path.join(path_root, "core"))
 
 from PIL import Image
 import argparse
@@ -41,6 +45,7 @@ def validate_chairs(model, iters=24):
     print("Validation Chairs EPE: %f" % epe)
     return {'chairs': epe}
 
+
 def get_val_dataset(image_size, num_samples):
     val_dataset = []
     for i in range(num_samples):
@@ -49,6 +54,74 @@ def get_val_dataset(image_size, num_samples):
         flow = torch.rand(2,*image_size)
         val_dataset.append((img1, img2, flow))
     return val_dataset
+
+@torch.no_grad()
+def manual_eval_speed(model, refinement_iters=32, eval_iters=100, image_size=(384, 512)):
+
+    model.eval()
+    results = []
+    epe_list = []
+
+    val_dataset = get_val_dataset(image_size, 1)
+    val_id = 0
+    num_threads=8
+    
+    image1, image2, flow_gt = val_dataset[val_id]
+    image1 = image1[None].cuda()
+    image2 = image2[None].cuda()
+
+    padder = InputPadder(image1.shape)
+    image1, image2 = padder.pad(image1, image2)
+
+    print(f"img1: {image1.shape} img2: {image2.shape}")
+
+    start = torch.cuda.Event(enable_timing=True)
+    end =   torch.cuda.Event(enable_timing=True)
+
+    start.record()
+    for i in range(eval_iters):
+        model(image1, image2, iters=refinement_iters)
+    end.record()
+    torch.cuda.synchronize()
+
+    print(start.elapsed_time(end))
+
+    elapsed_time = 0.0
+    for i in range(eval_iters):
+        start.record()
+        model(image1, image2, iters=refinement_iters)
+        end.record()
+        torch.cuda.synchronize()
+
+        elapsed_time += start.elapsed_time(end)
+    print(elapsed_time) 
+
+
+
+@torch.no_grad()
+def profile_eval_speed(model, refinement_iters=32, eval_iters=100, image_size=(384, 512)):
+
+    model.eval()
+    results = []
+    epe_list = []
+
+    val_dataset = get_val_dataset(image_size, 1)
+    val_id = 0
+    num_threads=8
+    
+    image1, image2, flow_gt = val_dataset[val_id]
+    image1 = image1[None].cuda()
+    image2 = image2[None].cuda()
+
+    padder = InputPadder(image1.shape)
+    image1, image2 = padder.pad(image1, image2)
+
+    with torch.autograd.profiler.profile(use_cuda=True) as prof:
+        for i in range(eval_iters):
+            model(image1, image2, iters=refinement_iters)
+
+    print(prof)
+
 
 
 @torch.no_grad()
@@ -121,6 +194,12 @@ if __name__ == '__main__':
     model.eval()
 
     with torch.no_grad():
+        manual_eval_speed(model, image_size=args.image_size, 
+                eval_iters=args.evaluation_iters,
+                refinement_iters=args.refinement_iters)
+        profile_eval_speed(model, image_size=args.image_size, 
+                eval_iters=args.evaluation_iters,
+                refinement_iters=args.refinement_iters)
         benchmark_eval_speed(model, image_size=args.image_size, 
                 eval_iters=args.evaluation_iters,
                 refinement_iters=args.refinement_iters)
