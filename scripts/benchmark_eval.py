@@ -57,6 +57,11 @@ def get_val_dataset(image_size, num_samples):
 
 @torch.no_grad()
 def manual_eval_speed(model, refinement_iters=32, eval_iters=100, image_size=(384, 512)):
+    """
+    Benchmark in two ways. Measure time for:
+        * The complete loop
+        * Each iteration separately
+    """
 
     model.eval()
     results = []
@@ -84,7 +89,7 @@ def manual_eval_speed(model, refinement_iters=32, eval_iters=100, image_size=(38
     end.record()
     torch.cuda.synchronize()
 
-    print(start.elapsed_time(end))
+    print(start.elapsed_time(end)/eval_iters)
 
     elapsed_time = 0.0
     for i in range(eval_iters):
@@ -94,12 +99,15 @@ def manual_eval_speed(model, refinement_iters=32, eval_iters=100, image_size=(38
         torch.cuda.synchronize()
 
         elapsed_time += start.elapsed_time(end)
-    print(elapsed_time) 
+    print(elapsed_time/eval_iters) 
 
 
 
 @torch.no_grad()
 def profile_eval_speed(model, refinement_iters=32, eval_iters=100, image_size=(384, 512)):
+    """
+    Use the pytorch profiler for the benchmark
+    """
 
     model.eval()
     results = []
@@ -126,6 +134,9 @@ def profile_eval_speed(model, refinement_iters=32, eval_iters=100, image_size=(3
 
 @torch.no_grad()
 def benchmark_eval_speed(model, refinement_iters=32, eval_iters=100, image_size=(384, 512)):
+    """
+    Benchmark the model using two random images with specified size and refinement iterations
+    """
 
     model.eval()
     results = []
@@ -158,6 +169,43 @@ def benchmark_eval_speed(model, refinement_iters=32, eval_iters=100, image_size=
 
     compare = benchmark.Compare(results)
     compare.print()
+
+@torch.no_grad()
+def benchmark_chairs(model, refinement_iters=32, eval_iters=100, image_size=(384, 512)):
+    """
+    Benchmark the model on the first image of the chairs dataset
+    """
+
+    model.eval()
+    results = []
+    epe_list = []
+
+    val_dataset = datasets.FlyingChairs(split='validation')
+    val_id = 0
+    num_threads=8
+    
+    image1, image2, flow_gt, _ = val_dataset[val_id]
+    image1 = image1[None].cuda()
+    image2 = image2[None].cuda()
+
+    print(f"img1: {image1.shape} img2: {image2.shape}")
+
+    # benchmark on the same random images and flow
+    t0 = benchmark.Timer(
+        stmt='flow_low, flow_pr = model(image1, image2, iters=refinement_iters)',
+        setup='',
+        globals={'model' : model, 'image1' : image1, 'image2' : image2, 'refinement_iters' : refinement_iters},
+        num_threads=num_threads,
+        label="model evaluation",
+        sub_label=f"img:{str(image1.shape)}, refinement_iters:{refinement_iters}",
+        description='torch',
+    )
+
+    results.append(t0.timeit(eval_iters))
+
+    compare = benchmark.Compare(results)
+    compare.print()
+
 
 
 
@@ -194,12 +242,17 @@ if __name__ == '__main__':
     model.eval()
 
     with torch.no_grad():
-        manual_eval_speed(model, image_size=args.image_size, 
+        benchmark_chairs(model, image_size=args.image_size, 
                 eval_iters=args.evaluation_iters,
                 refinement_iters=args.refinement_iters)
-        profile_eval_speed(model, image_size=args.image_size, 
+        manual_eval_speed(model, image_size=args.image_size, 
                 eval_iters=args.evaluation_iters,
                 refinement_iters=args.refinement_iters)
         benchmark_eval_speed(model, image_size=args.image_size, 
                 eval_iters=args.evaluation_iters,
                 refinement_iters=args.refinement_iters)
+        """
+        profile_eval_speed(model, image_size=args.image_size, 
+                eval_iters=args.evaluation_iters,
+                refinement_iters=args.refinement_iters)
+        """
