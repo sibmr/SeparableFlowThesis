@@ -252,6 +252,9 @@ if __name__ == '__main__':
                         help='use position and content-wise attention')
     parser.add_argument('--num_heads', default=1, type=int,
                         help='number of heads in attention and aggregation')
+
+    parser.add_argument('--output_path', help="path to store flow results for sintel/kitti test")
+
     args = parser.parse_args()
 
     model = torch.nn.DataParallel(SepFlow(args))
@@ -272,6 +275,6 @@ if __name__ == '__main__':
         elif args.dataset == 'kitti':
             validate_kitti(model.module)
         elif args.dataset == 'sintel_test':
-            create_sintel_submission(model.module)
+            create_sintel_submission(model.module, output_path=args.output_path)
         elif args.dataset == 'kitti_test':
-            create_kitti_submission(model.module,output_path='kitti_submission')
+            create_kitti_submission( model.module, output_path=args.output_path)

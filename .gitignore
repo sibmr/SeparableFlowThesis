@@ -1,6 +1,7 @@
 libs/GANet/build
 libs/MemorySaver/build
 runs
+test_flows
 __pycache__
 log.txt
 metrics.csv
