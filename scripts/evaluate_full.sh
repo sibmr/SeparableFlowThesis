@@ -1,12 +1,12 @@
 # Evaluate full training runs
 
 # original + GMA + 100K chairs
-python evaluate.py --output_path './test_flows/originalGMA' --model './checkpoints/train_originalGMA/models/sintel.pth'  --dataset 'sintel_test'  --use_gma
-#$ Validation (clean) EPE: 0.653848, 1px: 0.922428, 3px: 0.969420, 5px: 0.980194
-#$ Validation (final) EPE: 1.002394, 1px: 0.886479, 3px: 0.948263, 5px: 0.966085
 python evaluate.py --model './checkpoints/train_originalGMA/models/sintel.pth' --dataset 'sintel' --use_gma
-#$ Validation KITTI: 0.574540, 1.255321
+#$ Validation (final) EPE: 1.002394, 1px: 0.886479, 3px: 0.948263, 5px: 0.966085
+#$ Validation (clean) EPE: 0.653848, 1px: 0.922428, 3px: 0.969420, 5px: 0.980194
 python evaluate.py --model './checkpoints/train_originalGMA/models/kitti.pth'  --dataset 'kitti'  --use_gma
+#$ Validation KITTI: 0.574540, 1.255321
+python evaluate.py --output_path './test_flows/originalGMA' --model './checkpoints/train_originalGMA/models/sintel.pth'  --dataset 'sintel_test'  --use_gma
 
 # original + 100K chairs
 #$ python evaluate.py --model './checkpoints/train_originalLongerChairs/models/sintel.pth' --dataset 'sintel'
