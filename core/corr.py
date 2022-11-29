@@ -2,9 +2,9 @@ import torch
 import torch.nn.functional as F
 import torch.nn as nn
 from utils.utils import bilinear_sampler, coords_grid
-from libs.GANet.modules.GANet import NLFMax, NLFIter
 from libs.MemorySaver.functions import ComputeMaxAvgFunction, ComputeMaxArgmaxAvgFunction
 from libs.MemorySaver.functions import ComputeSelfCompressionFunction
+from core.nlf import NLF
 
 try:
     import alt_cuda_corr
@@ -12,50 +12,10 @@ except:
     # alt_cuda_corr is not compiled
     pass
 
-
-class NLF(nn.Module):
-
-    def __init__(self, in_channel=32):
-        super(NLF, self).__init__()
-        self.nlf = NLFIter()
-    
-    def forward(self, x, g):
-        """ 4 directional aggregation of 4d correlation volume
-            TODO: what does nlf stand for?
-
-        Args:
-            x (torch.Tensor): input tensor (4d correlation volume)
-            g (torch.Tensor): guidance for 4d correlation volume
-        """
-        N, D1, D2, H, W = x.shape
-
-        # merge pixel height/width
-        x = x.reshape(N, D1*D2, H, W).contiguous()
-        rem = x
-        
-        # split guidance for each direction: down, up, right, left
-        k1, k2, k3, k4 = torch.split(g, (5, 5, 5, 5), 1)
-
-#        k1, k2, k3, k4 = self.getweights(x)
-        
-        # L1 normalize the guidance for each direction
-        k1 = F.normalize(k1, p=1, dim=1)
-        k2 = F.normalize(k2, p=1, dim=1)
-        k3 = F.normalize(k3, p=1, dim=1)
-        k4 = F.normalize(k4, p=1, dim=1)
-
-        # apply nlf to 4d cost volume
-        x = self.nlf(x, k1, k2, k3, k4)
-#        x = x + rem
-
-        # reshape to separate pixel channels
-        x = x.reshape(N, D1, D2, H, W)
-        
-        return x
-        
-
-
 class CorrBlock:
+    """ Module for correlation volume creation, aggregation, separation, 
+        pyramid pooling and lookup
+    """
     def __init__(self, fmap1, fmap2, guid, num_levels=4, radius=4):
         self.num_levels = num_levels
         self.radius = radius
@@ -71,6 +31,7 @@ class CorrBlock:
         self.shape = corr.shape
         corr = corr.reshape(batch*h1*w1, 1, h2, w2)
         
+        # create 4D correlation volume pyramid
         self.corr_pyramid.append(corr)
         for i in range(self.num_levels-1):
             corr = F.avg_pool2d(corr, 2, stride=2)
@@ -183,7 +144,6 @@ class CorrBlock:
                 # shape: (batch, corr_channels, wd/2**i, ht, wd)
                 sep_u = torch.cat((sep_u, adaptive_corr_v), dim=1)
 
-            # TODO: why upsample from reduced level resolution?
             # maybe they used the largest-level correlation volume to pair the attention with
             # also, upsampling is the only way the concatenation at the end is possible (otherwise, shape[2] would not match)
             # (batch, corr_channels, wd/2**i, ht, wd) -> (batch, corr_channels, wd, ht, wd)
@@ -206,38 +166,80 @@ class CorrBlock:
 
 
     def __call__(self, coords, sep=False, attention_weights=None):
+        """ applies the lookup operation to all pyramid levels
+
+        Args:
+            coords (torch.Tensor): displacement location in image 2 feature map
+            sep (bool, optional): whether to separate the cost volume. Defaults to False.
+            attention_weights (Tuple[torch.nn.Conv3d, torch.nn.Conv3d], optional): two attention networks. Defaults to None.
+
+        Returns:
+            Union[torch.Tensor, Tuple[torch.Tensor,torch.Tensor]] : 
+                separated 3D cost volumes OR lookup of 4D correlation volume pyramid
+                depending on sep=True     OR sep=False
+        """
         
         # returns two 3d cost volumes
         # sep_u: (batch, ht, wd, ht), sep_v: (batch, ht, wd, wd)
         # very strange behaviour:
         #   if sep==False:
-        #       return indexed 4d correlation volume
+        #       return lookup of 4d correlation volume
         #   if sep==True:
-        #       return two NOT indexed 3d correlation volumes
-        #       they need to be indexed in CorrBlock1D still
+        #       return two 3d correlation volumes without applying the lookup operation
+        #       they need to be lookuped in CorrBlock1D still
         if sep:
             return self.separate(attention_weights)
         
         # this part is the same as RAFT
         r = self.radius
+
+        # permutation: (batch, 2, ht, wd) -> (batch, ht, wd, 2)
         coords = coords.permute(0, 2, 3, 1)
+
+        # get batch, ht, wd sizes
         batch, h1, w1, _ = coords.shape
 
         out_pyramid = []
         for i in range(self.num_levels):
+            # get correlation volume at the current level
             corr = self.corr_pyramid[i]
+            # get local grid coordinates relative to pixel center
+            # dx = dy = [-r, -r+1, ..., -1, 0, 1, ..., r-1, r]
             dx = torch.linspace(-r, r, 2*r+1)
             dy = torch.linspace(-r, r, 2*r+1)
+
+            # meshgrid of local coordinates: reversed since dy first
+            # fitting since coords is also reversed with y first
+            # this has shape (2*r+1, 2*r+1, 2)
+            # implies use of infinity norm ||dx||_inf in contrast to paper with 1-norm ||dx||_1
             delta = torch.stack(torch.meshgrid(dy, dx), axis=-1).to(coords.device)
 
+            # shape (batch, ht, wd, 2) -> (batch*ht*wd, 1, 1, 2)
+            # diveded by 2**pyramid_level accounting for the grid step size at each level
+            # due to pooling and reduction in image size
+            # delta is not diveded -> larger window at higher pyramid_level
             centroid_lvl = coords.reshape(batch*h1*w1, 1, 1, 2) / 2**i
+
+            # reshape (2*r+1, 2*r+1, 2) -> (1, 2*r+1, 2*r+1, 2)
             delta_lvl = delta.view(1, 2*r+1, 2*r+1, 2)
+
+            # coords (batch*ht*wd, 2*r+1, 2*r+1, 2) = centroid (batch*ht*wd, 1, 1, 2) + delta (1, 2*r+1, 2*r+1, 2)
+            # for each pixel in image1, there are (2*r+1)**2 coordinates of locations in image2
             coords_lvl = centroid_lvl + delta_lvl
 
+            # the bilinear sampler maps (2*r+1)**2 correlation values to each pixel
+            # by using bilinear interpolation on the current correlation pyramid level (pooled values)
+            # shape: (batch*h1*w1, 2*r+1, 2*r+1)
             corr = bilinear_sampler(corr, coords_lvl)
+
+            # separate dimensions
+            # (batch*h1*w1, dim, 2*r+1, 2*r+1) -> (batch, h1, w1, dim*(2*r+1)*(2*r+1))
             corr = corr.view(batch, h1, w1, -1)
+
             out_pyramid.append(corr)
 
+        # the correlation values of all pyramid levels are concatenated
+        # resulting shape: (batch, h1, w1, num_levels*dim*(2*r+1)*(2*r+1))
         out = torch.cat(out_pyramid, dim=-1)
 
         # permutation:
@@ -331,22 +333,50 @@ class AlternateCorrBlock:
         return corr / torch.sqrt(torch.tensor(dim).float())
 
 class AlternateCorrBlockSepflow:
+    """ Class for the alternate backward pass of Separable Flow
+        Implements the correlation volume separation without storing the 4D correlation volume 
+        Does not implement the 3D lookup operation: This is implemented by CorrBlock1D
+    """
     def __init__(self, fmap1, fmap2, guid, num_levels=4, radius=4, support_backward=False):
+        """ Initialize the separation module
+
+        Args:
+            fmap1 (torch.Tensor):   features of image one of shape (batch, fdim, ht, wd)
+            fmap2 (_type_):         features of image one of shape (batch, fdim, ht, wd)
+            guid (torch.Tensor):    guidance weights for 4d cost volume aggregation
+                                    if None then 4d cost volume will not be aggregated
+            num_levels (int, optional): number of levels of the 4D correlation volume pyramid. Defaults to 4.
+            radius (int, optional): lookup radius: unused. Defaults to 4.
+            support_backward (bool, optional): whether to enable the support for the backward pass. Defaults to False.
+
+        Raises:
+            Exception: in case guidance NLF weights are passed, e.g. guid is not None
+        """
 
         if guid is not None:
+            # NLF does not work with this, since it creates dependencies between the 4D correlation volume indices
             raise Exception("Cannot use NLF while not storing the 4d correlation volume")
 
+        # whether to support the backward pass
         if support_backward:
+            # if True: compute argmax alongside max and avg
             self.max_avg_function = ComputeMaxArgmaxAvgFunction
         else:
+            # only compute max and avg
             self.max_avg_function = ComputeMaxAvgFunction
 
+        # number of pyramid levels
         self.num_levels = num_levels
+
+        # lookup radius
         self.radius = radius
 
         self.fmap1_l0 = fmap1
 
+        # build image2 feature pyramid, first level 0 is fmap2
         self.pyramid = [fmap2]
+        # average pooling to reduce displacement dimension sizes
+        # which correspond to the spatial dimension of fmap2
         for i in range(self.num_levels-1):
             fmap2 = F.avg_pool2d(fmap2, 2, stride=2)
             self.pyramid.append(fmap2)
@@ -426,7 +456,6 @@ class AlternateCorrBlockSepflow:
                 # shape: (batch, corr_channels, wd/2**i, ht, wd)
                 sep_u = torch.cat((sep_u, adaptive_corr_v), dim=1)
 
-            # TODO: why upsample from reduced level resolution?
             # maybe they used the largest-level correlation volume to pair the attention with
             # also, upsampling is the only way the concatenation at the end is possible (otherwise, shape[2] would not match)
             # (batch, corr_channels, wd/2**i, ht, wd) -> (batch, corr_channels, wd, ht, wd)
@@ -452,14 +481,14 @@ class AlternateCorrBlockSepflow:
         # sep_u: (batch, ht, wd, ht), sep_v: (batch, ht, wd, wd)
         # very strange behaviour:
         #   if sep==False:
-        #       return indexed 4d correlation volume
+        #       return lookup of 4d correlation volume
         #   if sep==True:
-        #       return two NOT indexed 3d correlation volumes
-        #       they need to be indexed in CorrBlock1D still
+        #       return two 3d correlation volumes without lookup applied
+        #       they need to be lookuped in CorrBlock1D still
         if sep:
             return self.separate(attention_weights)
         
-        raise NotImplementedError("Missing the cpp/cuda part for indexing" + 
+        raise NotImplementedError("Missing the cpp/cuda part for lookup" + 
             "of the 4d correlation volume without storing it")
 
         coords = coords.permute(0, 2, 3, 1)
@@ -482,16 +511,17 @@ class AlternateCorrBlockSepflow:
         
 
 class CorrBlock1D:
+    """ lookup operation for the 3D correlation volumes
+    """
 
     def __init__(self, corr1, corr2, num_levels=4, radius=4):
-        """ responsible for indexing the 3d correlation volumes for u and v
-
+        """ responsible for lookup of the 3d correlation volumes for u and v
 
         Args:
-            corr1 (torch.Tensor): _description_
-            corr2 (_type_): _description_
-            num_levels (int, optional): _description_. Defaults to 4.
-            radius (int, optional): _description_. Defaults to 4.
+            corr1 (torch.Tensor): 3D correlation volume 1
+            corr2 (torch.Tensor): 3D correlation volume 2
+            num_levels (int, optional): number of pyramid levels. Defaults to 4.
+            radius (int, optional): lookup radius. Defaults to 4.
         """
         self.num_levels = num_levels
         self.radius = radius
@@ -505,11 +535,11 @@ class CorrBlock1D:
         assert(corr1.shape[:-1] == corr2.shape[:-1])
         assert(h1 == h2 and w1 == w2)
 
-        #self.coords = coords_grid(batch, h2, w2).to(corr1.device)
-
         corr1 = corr1.reshape(batch*h1*w1, dim, 1, w2)
         corr2 = corr2.reshape(batch*h1*w1, dim, 1, h2)
 
+        # build 3D correlation volume pyramids by downsampling
+        # across displacement dimension
         self.corr_pyramid1.append(corr1)
         self.corr_pyramid2.append(corr2)
         for i in range(self.num_levels):
@@ -517,7 +547,7 @@ class CorrBlock1D:
             self.corr_pyramid1.append(corr1)
             corr2 = F.avg_pool2d(corr2, [1,2], stride=[1,2])
             self.corr_pyramid2.append(corr2)
-            #print(corr1.shape, corr1.mean().item(), corr2.shape, corr2.mean().item())
+
     def bilinear_sampler(self, img, coords, mode='bilinear', mask=False):
         """ Wrapper for grid_sample, uses pixel coordinates """
         H, W = img.shape[-2:]
@@ -535,6 +565,16 @@ class CorrBlock1D:
         return img
 
     def __call__(self, coords):
+        """ perform lookup on both 3D correlation volumes and all pyramid levels
+
+        Args:
+            coords (torch.Tensor): current estimated displacement locations in fmap2
+
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor]: lookup of both correlation volumes concatenated 
+            across pyramid levels
+        """
+
         coords_org = coords.clone()
         coords = coords_org[:, :1, :, :]
         coords = coords.permute(0, 2, 3, 1)
@@ -551,11 +591,11 @@ class CorrBlock1D:
 
             coords_lvl = torch.cat([x0,y0], dim=-1)
             coords_lvl = torch.clamp(coords_lvl, -1, 1)
-            #print("corri:", corr.shape, corr.mean().item(), coords_lvl.shape, coords_lvl.mean().item())
+
             corr = self.bilinear_sampler(corr, coords_lvl)
-            #print("corri:", corr.shape, corr.mean().item())
+
             corr = corr.view(batch, h1, w1, -1)
-            #print("corri:", corr.shape, corr.mean().item())
+
             out_pyramid.append(corr)
 
         out = torch.cat(out_pyramid, dim=-1)
