@@ -423,9 +423,34 @@ def measure_more_refine_iters():
     measure_alt_fw   (do_bw_pass=True , img_tensor_size=(1,3,512,1024),refine_iters=32)
     torch.cuda.empty_cache()
 
+def measure_only_needed_train():
+    torch.cuda.empty_cache()
+    measure_normal_fw(do_bw_pass=True,  img_tensor_size=(12,3,320,448))
+    torch.cuda.empty_cache()
+    measure_alt_fw   (do_bw_pass=True,  img_tensor_size=(12,3,320,448))
+    torch.cuda.empty_cache()
+    measure_normal_fw(do_bw_pass=True,  img_tensor_size=( 1,3,512,1024))
+    torch.cuda.empty_cache()
+    measure_alt_fw   (do_bw_pass=True,  img_tensor_size=( 1,3,512,1024))
+    torch.cuda.empty_cache()
+    
+def measure_only_needed_test():
+    torch.cuda.empty_cache()
+    measure_normal_fw(do_bw_pass=False, img_tensor_size=( 1,3,320,448))
+    torch.cuda.empty_cache()
+    measure_alt_fw   (do_bw_pass=False, img_tensor_size=( 1,3,320,448))
+    torch.cuda.empty_cache()
+    measure_normal_fw(do_bw_pass=False, img_tensor_size=( 1,3,512,1024))
+    torch.cuda.empty_cache()
+    measure_alt_fw   (do_bw_pass=False, img_tensor_size=( 1,3,512,1024))
+    torch.cuda.empty_cache()
+
+
 
 if __name__ == "__main__":
     # do_tests()
     # measure_all()
-    measure_inference_bs1()
-    measure_more_refine_iters()
+    # measure_inference_bs1()
+    # measure_more_refine_iters()
+    # measure_only_needed_train()
+    measure_only_needed_test()
