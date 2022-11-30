@@ -66,7 +66,7 @@ class Guidance(nn.Module):
         
         # last two processing blocks
         # combined in additive residual style
-        # both together: (batch, self.channels/4, ht, wd) -> (batch, self.channels/2, ht, wd)
+        # both together: (batch, self.channels/4, ht, wd) -> (batch, self.channels/2, ht//2, wd//2)
         self.conv11 = nn.Sequential(nn.Conv2d(inner_channels, inner_channels*2, kernel_size=3, stride=2, padding=1),
                                    nn.InstanceNorm2d(inner_channels*2),
                                    nn.ReLU(inplace=True))
@@ -120,9 +120,6 @@ class Guidance(nn.Module):
                                         nn.Conv2d(inner_channels, self.wsize*2, kernel_size=3, stride=1, padding=1))
         
         
-        #self.getweights = nn.Sequential(GetFilters(radius=1),
-        #                                nn.Conv2d(9, 20, kernel_size=1, stride=1, padding=0, bias=False))
-
 
 
     def forward(self, fea, img):
@@ -134,13 +131,13 @@ class Guidance(nn.Module):
 
         Returns:
             Tuple[Optional[torch.Tensor], dict, dict]: guidance for 4d/3d correlation volume calculation
-                the Tensor is used for correlation volume aggregation
-                the dictionaries are used for C_u, C_v 3d correlation volume aggregation
-                dictionaries contain keys sg1,sg2,sg3,sg11,sg12 for the 5 different aggregation steps
-                each one-eighth-pixel has 20 weights that are split as follows:
-                    4 directions, with 5 weights each for aggregation
-                the weights for 4d cost volume aggregation may be None
-                if this is the case, the guidance parameters for the 4d volume are also None
+                - the Tensor is used for 4D correlation volume aggregation
+                - the dictionaries are used for C_u, C_v 3d correlation volume aggregation
+                    dictionaries contain keys sg1,sg2,sg3,sg11,sg12 for the 5 different aggregation steps
+                    each one-eighth-pixel has 20 weights that are split as follows:
+                        4 directions, with 5 weights each for aggregation
+                    the weights for 4d cost volume aggregation may be None
+                    if this is the case, the guidance parameters for the 4d volume are also None
         """
         
         # reduce img resolution from full to 1/8, adding channels
@@ -187,14 +184,16 @@ class Guidance(nn.Module):
         
         # sg11 and sg12 calculated using strongest-processed input
         # provide last two parts of 3D correlation volume guidance
-        # finally: (batch, 5*self.wsize, ht, wd) for guid_u, guid_v each
+        # finally: (batch, 2*self.wsize, ht//2, wd//2) for sg11 and sg12 each
         sg11 = self.weight_sg11(x)
         sg11_u, sg11_v = torch.split(sg11, (self.wsize, self.wsize), dim=1)
         sg12 = self.weight_sg12(x)
         sg12_u, sg12_v = torch.split(sg12, (self.wsize, self.wsize), dim=1)
         
-        # guidance with shape (batch, 5*self.wsize, ht, wd) stored in dict
-        # as tensors of shape each (batch, self.wsize, ht, wd)
+        # guidance with shapes 
+        #   (batch, self.wsize, ht,    wd   ) for sg1, sg2, sg3
+        #   (batch, self.wsize, ht//2, wd//2) for sg11, sg12
+        # stored in dict
         guid_u = dict([('sg1', sg1_u),
                        ('sg2', sg2_u),
                        ('sg3', sg3_u),
