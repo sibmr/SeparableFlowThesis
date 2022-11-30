@@ -1,7 +1,18 @@
-# SeparableFlow
+# Optical Flow Estimation with Separable Cost Volume
+
+Expansion of the 
+[implementation](https://github.com/feihuzhang/SeparableFlow)
+accompanying 
 [Separable Flow: Learning Motion Cost Volumes for Optical Flow Estimation](https://openaccess.thecvf.com/content/ICCV2021/papers/Zhang_Separable_Flow_Learning_Motion_Cost_Volumes_for_Optical_Flow_Estimation_ICCV_2021_paper.pdf)
+.
 
-
+Additions:
+* Implemented learnable, attention-based self-compression channels of the 3D correlation volume as described in the paper. The number of the
+channels can be controlled via the command line.
+* Implemented CUDA C++ PyTorch extension for cost volume separation that saves memory by not storing the 4D correlation volume.
+* Option to omit 4D correlation volume aggregation.
+* Option to omit the use of 4D correlation features during motion refinement.
+* Option to add Global Motion Aggregation to Separable Flow.
 
 
 ## Building Requirements:
@@ -20,13 +31,7 @@
 
 ## Environment:
 
-    [[
-    conda is not necessary:
-    conda install pytorch torchvision torchaudio cudatoolkit=11.1 -c pytorch-lts -c nvidia
-    conda install matplotlib tensorboard scipy opencv
-    ]]
     
-    pip-only:
     pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu113
     pip install matplotlib tensorboard scipy
     pip install einops opencv-python pypng
@@ -37,62 +42,99 @@
 Step 1: compile the libs by "sh compile.sh"
 - Change the environmental variable ($PATH, $LD_LIBRARY_PATH etc.), if it's not set correctly in your system environment (e.g. .bashrc). Examples are included in "compile.sh".
 
-Step 2: download and prepare the training dataset or your own test set.
+
+Step 2: optionally, compile the alternative 4D correlation volume separation by "sh compile_memsave.sh"
+
+
+Step 3: download and prepare the training dataset or your own test set.
 
         
-Step 3: revise parameter settings and run "train.sh" and "evaluate.sh" for training, finetuning and prediction/testing. Note that the “crop_width” and “crop_height” must be multiple of 64 during training.
+Step 4: revise parameter settings and run "train.sh" and "evaluate.sh" for training, finetuning and prediction/testing. Note that the “crop_width” and “crop_height” must be multiple of 64 during training.
 
-    Demo example: (use "sintel" or "universal" for other unseen datasets):
-    $ python demo.py --model checkpoints/sepflow_universal.pth --path ./your-own-image-folder
+## Folders and Files
 
+<ins>checkpoints</ins>  
+Training configurations and corresponding model checkpoints.
 
-## Pretrained models:
+<ins>core</ins>  
+Python files for the separable flow and gma implementation.
 
-| things | sintel | kitti| universal |
-|---|---|---|---|
-|[Google Drive](https://drive.google.com/file/d/1baepLE9wxmt4QJEGMC5QeaQCQfZETEAu/view?usp=sharing)|[Google Drive](https://drive.google.com/file/d/1bpm0HmwcBrbyAsikTJR3qST6mAavQ60k/view?usp=sharing)|[Google Drive](https://drive.google.com/file/d/1qqpuaPpFBcg5TjBrg49MZvdJoL7bEy8A/view?usp=sharing)|[Google Drive](https://drive.google.com/file/d/1FTYSdHzW12Iejal6n4xEbdKPyrSK-W6P/view?usp=sharing)|
-|[Baidu Yun (password: 9qcd)](https://pan.baidu.com/s/1lK2q0QtMwC0ROVCd6tyejA?pwd=9qcd)|[Baidu Yun (password: m1xs)](https://pan.baidu.com/s/1rtUrsGiTjU0GqMys1xRm6Q?pwd=m1xs)|[Baidu Yun (password: sg46)](https://pan.baidu.com/s/1ALo1lFmQkkziagoRPxzSsQ?pwd=sg46)|[Baidu Yun (password: 2has)](https://pan.baidu.com/s/1AP7ytz3HPy-oZZdNXzduWw?pwd=2has)|
+<ins>libs/MemorySaver</ins>  
+Alternative correlation volume separation implementation.
 
-These pre-trained models perform a little better than those reported in our original paper. 
-"universal" is trained on a mixture of synthetic and real datasets for cross-domain generalization.
+<ins>scripts</ins>  
+Python programs and shell scripts for evaluation and testing.
 
-| Leadboards | Sintel clean | Sintel final | KITTI |
-|---|---|---|---|
-| RAFT baseline | 1.94 | 3.18 | 5.10 |
-| Orginal paper | 1.50 | 2.67 | 4.64 |
-| This new implementation | 1.49 | 2.64 | 4.53 |
+## References:
 
-*Standard two-frame evaluations without previous video frames for "warm start".*
+* Separable Flow 
+( [paper](
+  https://github.com/feihuzhang/SeparableFlow) 
+ | 
+[implementation](
+  https://openaccess.thecvf.com/content/ICCV2021/papers/Zhang_Separable_Flow_Learning_Motion_Cost_Volumes_for_Optical_Flow_Estimation_ICCV_2021_paper.pdf) 
+):  
 
+        @inproceedings{Zhang2021SepFlow,
+          title={Separable Flow: Learning Motion Cost Volumes for Optical Flow Estimation},
+          author={Zhang, Feihu and Woodford, Oliver J. and Prisacariu, Victor Adrian and Torr, Philip H.S.},
+          booktitle={Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV)},
+          year={2021}
+          pages={10807-10817}
+        }
 
+* RAFT 
+(
+[paper]()
+ | 
+[implementation](https://github.com/princeton-vl/RAFT)
+)
 
+      @inproceedings{teed2020raft,
+        title={RAFT: Recurrent All Pairs Field Transforms for Optical Flow},
+        author={Zachary Teed and Jia Deng},
+        booktitle={Europe Conference on Computer Vision (ECCV)},
+        year={2020}
+      }
 
-## Reference:
+* GMA (
+  [paper](https://arxiv.org/abs/2104.02409)
+  | 
+  [implementation](https://github.com/zacjiang/GMA)
+)
 
-If you find the code useful, please cite our paper:
+      @inproceedings{jiang2021learning,
+        title={Learning to estimate hidden motions with global motion aggregation},
+        author={Jiang, Shihao and Campbell, Dylan and Lu, Yao and Li, Hongdong and Hartley, Richard},
+        booktitle={Proceedings of the IEEE/CVF International Conference on Computer Vision},
+        pages={9772--9781},
+        year={2021}
+      }
+* GANet (
+[paper](https://arxiv.org/pdf/1904.06587.pdf)
+  | 
+[implementation](https://github.com/feihuzhang/GANet)
+)
 
-    @inproceedings{Zhang2021SepFlow,
-      title={Separable Flow: Learning Motion Cost Volumes for Optical Flow Estimation},
-      author={Zhang, Feihu and Woodford, Oliver J. and Prisacariu, Victor Adrian and Torr, Philip H.S.},
-      booktitle={Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV)},
-      year={2021}
-      pages={10807-10817}
-    }
+      @inproceedings{Zhang2019GANet,
+        title={GA-Net: Guided Aggregation Net for End-to-end Stereo Matching},
+        author={Zhang, Feihu and Prisacariu, Victor and Yang, Ruigang and Torr, Philip HS},
+        booktitle={Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition (CVPR)},
+        pages={185--194},
+        year={2019}
+      }
+* DSMNet
+( [paper](
+https://arxiv.org/pdf/1911.13287.pdf
+)
+ | 
+ [implementation](
+https://github.com/feihuzhang/DSMNet
+ ) )
 
-The code is implemented based on 
-https://github.com/feihuzhang/DSMNet and https://github.com/princeton-vl/RAFT.
-Please also consider citing:
-
-    @inproceedings{zhang2019domaininvariant,
-      title={Domain-invariant Stereo Matching Networks},
-      author={Feihu Zhang and Xiaojuan Qi and Ruigang Yang and Victor Prisacariu and Benjamin Wah and Philip Torr},
-      booktitle={Europe Conference on Computer Vision (ECCV)},
-      year={2020}
-    }
-    @inproceedings{teed2020raft,
-      title={RAFT: Recurrent All Pairs Field Transforms for Optical Flow},
-      author={Zachary Teed and Jia Deng},
-      booktitle={Europe Conference on Computer Vision (ECCV)},
-      year={2020}
-    }
-  
+      @inproceedings{zhang2019domaininvariant,
+        title={Domain-invariant Stereo Matching Networks},
+        author={Feihu Zhang and Xiaojuan Qi and Ruigang Yang and Victor Prisacariu and Benjamin Wah and Philip Torr},
+        booktitle={Europe Conference on Computer Vision (ECCV)},
+        year={2020}
+      }
