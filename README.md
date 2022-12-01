@@ -65,6 +65,71 @@ Alternative correlation volume separation implementation.
 <ins>scripts</ins>  
 Python programs and shell scripts for evaluation and testing.
 
+## Notable Command Line Arguments for Training and Inference
+
+Command line arguments for train.py and evaluate.py
+
+Model modification settings:
+
+      --no_4d_corr        whether to use 4d correlation features during motion refinement (default: use 4D correlation features)
+      --num_corr_channels number of channels of the 3D correlation volume (default: 2)
+      --no_4d_agg         whether to aggregate the 4D correlation volume (default: use 4D aggregation)
+
+Use alternate implementation that does not store 4d correlation volume
+
+      --alternate_corr            use alternate 4D correlation volume separation implementation for only the forward pass (inference, default: false)
+      --alternate_corr_backward   use alternate correlation volume separation implementation supporting backward pass (training, default: false)
+
+
+Global Motion Aggregation settings:
+
+      --use_gma               whether to use Global Motion Aggregation (default: do not use GMA)
+      --position_only         only use position-wise attention (default: content only)
+      --position_and_content  use position and content-wise attention (default: content only)
+      --num_heads             number of heads in attention and aggregation (default: 1)
+
+Experiment (Multi-Training) settings:
+
+      --run_name              name used to identify the current run of the script (e.g. chairs, things, etc.)
+      --experiment_name       name used to identify the current experiment (e.g. no4dCorrelationFeatures)
+
+
+## Experiment Structure
+
+      Experiment Name (experiment root folder)
+      > models   
+        > chairs.pth
+        > things.pth
+      > runs
+      > > chairs
+      > > > log.txt
+      > > > tensorboard: events.out.tfevents...
+      > > things
+      > > > log.txt
+      > > > tensorboard: events.out.tfevents...
+      > slurm
+      > > job.sh
+      > > run_me.sh
+      > slurm_output
+      > > job_*_output.txt
+      > > job_*_error.txt
+      > train.sh
+
+
+* <ins>Folder</ins>: Experiment Name  
+  named after experiment_name specified in train.sh
+* <ins>train.sh</ins>:  
+Contains the training schedule in the form of the training script with command line arguments  
+python train.py --arg1 val1 --arg2 val2 ... --argN valN
+* <ins>models</ins>:  
+suggested path of the folder to store the models, can be set as command line argument in train.sh
+* <ins>runs</ins>:  
+contains folders with the --run_name and the logfiles corresponding to this execution of the script
+* <ins>slurm</ins>:  
+  * <ins>job.sh</ins>: specifies the slurm parameters and runs run_me.sh
+  * <ins>run_me.sh</ins>: prints out initial information such as data and time and starts train.sh
+
+
 ## References:
 
 * Separable Flow 
