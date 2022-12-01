@@ -1,3 +1,11 @@
+"""
+Functions to verify the equations for forward and backward pass during alternative cost volume separation 
+for the maximum and average channels.
+
+By sketching a basic algorithm as a python program, 
+the equations can be checked can be checked
+by comparing results with the standard implementation.
+"""
 from collections import namedtuple
 from pathlib import Path
 import sys

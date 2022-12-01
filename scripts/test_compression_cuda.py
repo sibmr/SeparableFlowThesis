@@ -1,3 +1,8 @@
+"""
+Functions to verify the forward and backward cuda implementation of the
+alternative cost volume separation for the self adaptive compression channels 
+by comparing the results with the standard implementation.
+"""
 from pathlib import Path
 import sys
 import os

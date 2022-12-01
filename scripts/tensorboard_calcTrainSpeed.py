@@ -1,3 +1,9 @@
+"""
+This file analyzes the tensorboard file to calculate the training speed.
+Intervals where evaluation is performed are filtered out by excluding outliers.
+
+command line argument: path to tensorboard logs file
+"""
 import sys
 import numpy as np
 from tensorboard.backend.event_processing import event_accumulator

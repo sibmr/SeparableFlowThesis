@@ -1,3 +1,10 @@
+"""
+    File for: 
+        - testing the correctness of the alternatvie separation forward and backward pass 
+            by comparing the results to the standard forward and backward pass
+        - measuring the memory consumption during training and inference
+"""
+
 from pathlib import Path
 import sys
 import os
@@ -82,6 +89,8 @@ def sequence_loss(flow_preds, flow_gt, valid, gamma=0.8, max_flow=400):
     return flow_loss, metrics
 
 class DictObject:
+    """ object to act as commandline args of SepFlow model
+    """
     def __init__(self, **entries):
         self.__dict__.update(entries)
     def __iter__(self):
@@ -90,6 +99,14 @@ class DictObject:
 
 
 def create_model(opt_args={}) -> torch.nn.Module:
+    """ create a model with standard args with option to overwrite args
+
+    Args:
+        opt_args (Dict, optional): dict to overwrite/add arguments
+
+    Return 
+        torch.nn.Module: Separable Flow module with specified arguments
+    """
     args = {
         "image_size" : [384,512],
         "resume" : "",
@@ -146,6 +163,16 @@ def create_model(opt_args={}) -> torch.nn.Module:
     return model
 
 def get_model(opt_args, state_dict=None):
+    """ get model with sepecified commandline args and parameters
+
+    Args:
+        opt_args (Dict): arguments for model
+        state_dict (Dict, optional): model parameters for initialization
+
+    Return:
+        torch.nn.Module:    fresh model according to args 
+                            if state_dict not None: initialize model with specified parameters
+    """
     model = create_model(opt_args)
     if state_dict is not None:
         model.load_state_dict(state_dict)
@@ -244,6 +271,10 @@ def list_compare(params1, params2, compare_grad=False):
         print(f"abs {abs_err} rel {rel_err}")
 
 def do_tests():
+    """ Run tests to compare the standard and alternative model results for the
+        gradients and parameters after optimization
+    """
+
     opt_args_no_memsave = {
             "alternate_corr" : False,
             "alternate_corr_backward" : False,
@@ -287,6 +318,15 @@ def do_tests():
     list_compare(model.fnet.parameters(), alternate_model.fnet.parameters())
 
 def measure_mem_fw(model, image_tensor_size, refine_iters=12):
+    """ Measure and print the memory consumption of the model without backward pass and gradients
+        enabled
+
+    Args:
+        model (torch.nn.Module): version of model to test
+        img_tensor_size (Tuple): size of the input frame pair patches: (batch, 3, HT, WD)
+        refine_iters (int, optional): number of refinement iterations
+    """
+
     batch, channels, ht, wd = image_tensor_size
     img1 = torch.rand((batch, channels, ht, wd)).cuda()
     img2 = torch.rand((batch, channels, ht, wd)).cuda()
@@ -309,6 +349,14 @@ def measure_mem_fw(model, image_tensor_size, refine_iters=12):
     print(f"min: {min(used_mem_list)/((1024)**3)} max: {max(used_mem_list)/((1024)**3)}")
 
 def measure_mem_fw_bw(model, image_tensor_size, refine_iters=12):
+    """ Measure and print the memory consumption of the model with backward pass and gradients
+        enabled
+    Args:
+        model (torch.nn.Module): version of model to test
+        img_tensor_size (Tuple): size of the input frame pair patches: (batch, 3, HT, WD)
+        refine_iters (int, optional): number of refinement iterations
+    """
+
     batch, channels, ht, wd = image_tensor_size
     img1 = torch.rand((batch, channels, ht, wd)).cuda()
     img2 = torch.rand((batch, channels, ht, wd)).cuda()
@@ -335,6 +383,14 @@ def measure_mem_fw_bw(model, image_tensor_size, refine_iters=12):
 
 
 def measure_normal_fw(do_bw_pass=False, img_tensor_size=(12,3,320,448), refine_iters=12):
+    """ Measure and print the memory consumption of the model without alternative separation
+
+    Args:
+        do_bw_pass (bool, optional): whether to do the backward pass and enable gradients
+        img_tensor_size (Tuple): size of the input frame pair patches: (batch, 3, HT, WD)
+        refine_iters (int, optional): number of refinement iterations
+    """
+
     opt_args = {
         "alternate_corr" : False,
         "alternate_corr_backward" : False,
@@ -351,6 +407,14 @@ def measure_normal_fw(do_bw_pass=False, img_tensor_size=(12,3,320,448), refine_i
 
 
 def measure_alt_fw(do_bw_pass=False, img_tensor_size=(12,3,320,448), refine_iters=12):
+    """ Measure and print the memory consumption of the model with alternative separation
+
+    Args:
+        do_bw_pass (bool, optional): whether to do the backward pass and enable gradients
+        img_tensor_size (Tuple): size of the input frame pair patches: (batch, 3, HT, WD)
+        refine_iters (int, optional): number of refinement iterations
+    """
+
     opt_args = {
         "alternate_corr_backward" : True,
         "no_4d_corr" : True,
@@ -424,6 +488,9 @@ def measure_more_refine_iters():
     torch.cuda.empty_cache()
 
 def measure_only_needed_train():
+    """
+    measure memory results for table at tranining time (fw+bw)
+    """
     torch.cuda.empty_cache()
     measure_normal_fw(do_bw_pass=True,  img_tensor_size=(12,3,320,448))
     torch.cuda.empty_cache()
@@ -435,6 +502,9 @@ def measure_only_needed_train():
     torch.cuda.empty_cache()
     
 def measure_only_needed_test():
+    """
+    measure memory results for table at inference time (fw)
+    """
     torch.cuda.empty_cache()
     measure_normal_fw(do_bw_pass=False, img_tensor_size=( 1,3,320,448))
     torch.cuda.empty_cache()
@@ -449,8 +519,5 @@ def measure_only_needed_test():
 
 if __name__ == "__main__":
     # do_tests()
-    # measure_all()
-    # measure_inference_bs1()
-    # measure_more_refine_iters()
     # measure_only_needed_train()
     measure_only_needed_test()
