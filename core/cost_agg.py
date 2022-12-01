@@ -1,17 +1,15 @@
 import torch
 import torch.nn as nn
 import torch.nn.init as init
-from libs.GANet.modules.GANet import DisparityRegression
-from libs.GANet.modules.GANet import MyNormalize
-from libs.GANet.modules.GANet import GetWeights, GetFilters
 from libs.GANet.modules.GANet import SGA
-from libs.GANet.modules.GANet import NLFIter
 import torch.nn.functional as F
 from torch.autograd import Variable
 import numpy as np
 
 
 class DomainNorm2(nn.Module):
+    """ unused
+    """
     def __init__(self, channel, l2=True):
         super(DomainNorm, self).__init__()
         self.normalize = nn.InstanceNorm2d(num_features=channel, affine=False)
@@ -64,7 +62,7 @@ class BasicConv(nn.Module):
             relu (bool, optional): whether to use relu actication. Defaults to True.
         """
         super(BasicConv, self).__init__()
-#        print(in_channels, out_channels, deconv, is_3d, bn, relu, kwargs)
+
         self.relu = relu
         self.use_bn = bn
         self.l2 = l2
@@ -80,7 +78,6 @@ class BasicConv(nn.Module):
             else:
                 self.conv = nn.Conv2d(in_channels, out_channels, bias=False, **kwargs)
             self.bn = DomainNorm(channel=out_channels, l2=self.l2)
-#            self.bn = nn.InstanceNorm2d(out_channels)
 
     def forward(self, x):
         x = self.conv(x)
@@ -118,7 +115,6 @@ class Conv2x(nn.Module):
 
     def forward(self, x, rem):
         x = self.conv1(x)
-        #print(x.shape, rem.shape)
         assert(x.size() == rem.size()),[x.size(), rem.size()]
         if self.concat:
             x = torch.cat((x, rem), 1)
@@ -143,7 +139,6 @@ class SGABlock(nn.Module):
             self.bn_relu = nn.Sequential(nn.BatchNorm3d(channels),
                                          nn.ReLU(inplace=True))
             self.conv_refine = BasicConv(channels, channels, is_3d=True, kernel_size=3, padding=1, relu=False)
-#            self.conv_refine1 = BasicConv(8, 8, is_3d=True, kernel_size=1, padding=1)
         else:
             self.bn = nn.BatchNorm3d(channels)
         
@@ -203,7 +198,6 @@ class ShiftRegression(nn.Module):
     def __init__(self, max_shift=192):
         super(ShiftRegression, self).__init__()
         self.max_shift = max_shift
-#        self.disp = Variable(torch.Tensor(np.reshape(np.array(range(self.maxdisp)),[1,self.maxdisp,1,1])).cuda(), requires_grad=False)
 
     def forward(self, x, max_shift=None):
         """ motion regression with weights in x
@@ -239,6 +233,8 @@ class ShiftRegression(nn.Module):
         return out
 
 class ShiftEstimate(nn.Module):
+    """ ununsed
+    """
 
     def __init__(self, max_shift=192, InChannel=24):
         super(ShiftEstimate, self).__init__()
@@ -246,7 +242,6 @@ class ShiftEstimate(nn.Module):
         self.softmax = nn.Softmax(dim=1)
         self.regression = ShiftRegression(max_shift=self.max_shift+1)
         self.conv3d_2d = nn.Conv3d(InChannel, 1, (3, 3, 3), (1, 1, 1), (1, 1, 1), bias=True)
-        #self.upsample_cost = FilterUpsample()
     
     def upsample_flow(self, flow, mask):
         """ Upsample flow field [H/3, W/3, 2] -> [H, W, 2] using convex combination """
@@ -262,10 +257,6 @@ class ShiftEstimate(nn.Module):
         return up_flow.reshape(N, 1, 3*H, 3*W)
 
     def forward(self, x):
-        #N, _,  _, H, W = g.size()
-        #assert (x.size(3)==H and x.size(4)==W)
-        #x = self.upsample_cost(x, g)
-        #print(x.size(), g.size())
         x = F.interpolate(self.conv3d_2d(x), [self.max_shift*2+1, x.size()[3]*4, x.size()[4]*4], mode='trilinear', align_corners=True)
         x = torch.squeeze(x, 1)
         x = self.softmax(x)
@@ -276,7 +267,8 @@ class ShiftEstimate(nn.Module):
 class ShiftEstimate2(nn.Module):
 
     def __init__(self, max_shift=100,  InChannel=24):
-        """_summary_
+        """ combination of learned channels reduction from InChannel->1 and motion regression
+            for 3D volume with additional channels dimension
 
         Args:
             max_shift (int, optional): maximum displacement. Defaults to 100.
@@ -287,7 +279,6 @@ class ShiftEstimate2(nn.Module):
         self.softmax = nn.Softmax(dim=1)
         self.regression = ShiftRegression()
         self.conv3d_2d = nn.Conv3d(InChannel, 1, kernel_size=3, stride=1, padding=1, bias=True)
-        #self.upsample_cost = FilterUpsample()
 
     def forward(self, x, max_shift=None):
         """ Apply motion regression, given the indexed correlation volume to calculate the inital flow
@@ -303,7 +294,6 @@ class ShiftEstimate2(nn.Module):
         # divide max shift by 4
         if max_shift is not None:
             assert ((max_shift//8 * 2 + 1) == x.shape[2]),[x.shape, max_shift, max_shift//8*2+1]
-        #assert(x.size() == rem.size()),[x.size(), rem.size()]
             self.max_shift = max_shift // 4 
         
         # conv3d_2d: reduce channels size to one
@@ -311,7 +301,6 @@ class ShiftEstimate2(nn.Module):
         # interpolation doubles size of last three dimensions displacement, height, width
         # shape after interpolate: (batch, 1, 2*(max_shift//4)+1, 2*ht, 2*wd)
         x = F.interpolate(self.conv3d_2d(x), [self.max_shift*2+1, x.size()[3]*2, x.size()[4]*2], mode='trilinear', align_corners=True)
-#        x = self.conv3d_2d(x)
         
         # shape after squeeze: (batch, 2*(max_shift//4)+1, 2*ht, 2*wd)
         x = torch.squeeze(x, 1)
@@ -417,7 +406,7 @@ class CostAggregation(nn.Module):
             cost = self.corr2cost(x, max_shift//8, is_ux)
             shift0 = self.shift0(cost, max_shift)
 
-        # hourglass network with skip-connections and semi-global aggregation:
+        # encoder decoder network with skip-connections and semi-global aggregation:
         #   l0:         (batch,     1*self.inner_channel,   wd OR ht,   ht,     wd)
         #   d1:         (batch,     2*self.inner_channel,   wd OR ht,   ht//2,  wd//2)
         #   d2:         (batch,     4*self.inner_channel,   wd OR ht,   ht//4,  wd//4)
@@ -468,7 +457,7 @@ class CostAggregation(nn.Module):
         # shape: (batch, 1, wd OR ht, ht, wd)
         corr = self.corr_output(x) 
         
-        # another hourglass module
+        # another encoder-decoder module
         # interestingly, this processes the indexed 3d correlation volume
         # shape: (batch, inner_dim, 2*(max_shift//8)+1, ht, wd)
         rem0 = cost
@@ -482,7 +471,7 @@ class CostAggregation(nn.Module):
         x = self.deconv1b(x, rem0)
         x = self.sga3(x, g['sg3'])
         
-        # the hourglass-refined indexed 3d correlation volume is directly used for motion regression
+        # the encoder decoder-refined indexed 3d correlation volume is directly used for motion regression
         # shift2 is the resulting, final inital motion-regressed cost volume
         shift2 = self.shift2(x, max_shift)
         
@@ -591,20 +580,14 @@ class Corr2Cost(nn.Module):
             # shape: (batch*h*w, 1, 2*maxdisp+1, 1)
             y0 = torch.zeros_like(x0)
            
-           # if is_ux:
-            
             # concatenate 0-valued y0 to x0 coord displacements
             # shape: (batch*h*w, 1, 2*maxdisp+1, 2)
             coords_lvl = torch.cat([x0,y0], dim=-1)
            
-           # else:
-           #     coords_lvl = torch.cat([y0, x0], dim=-1)
         
         # sample from 1d correlation volume with u displacements
         # shape: (batch*ht*wd, inner_dim, 1, 2*maxdisp+1)
         corr = self.bilinear_sampler(corr, coords_lvl)
-        
-        #print(corr.shape)
         
         # shape: (batch*ht*wd, inner_dim, 1, 2*maxdisp+1)
         #   -> (batch, ht, wd, inner_dim, 2*maxdisp+1)
