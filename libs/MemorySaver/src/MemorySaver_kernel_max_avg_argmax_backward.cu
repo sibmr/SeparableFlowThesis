@@ -1,4 +1,3 @@
-//#include <torch/torch.h>
 #include <torch/extension.h>
 #include <cuda.h>
 #include <cuda_runtime.h>
@@ -6,6 +5,7 @@
 #include <stdexcept>
 #include <string>
 
+// block dimension constants
 #define BLOCK_H 4
 #define BLOCK_W 8
 #define BLOCK_HW BLOCK_H * BLOCK_W
@@ -16,6 +16,8 @@
 
 #define CHANNEL_STRIDE 32
 #define FEATURE_SIZE 256
+
+// size of the feature split (cache features dimension size)
 #define FEATURE_SPLIT_SIZE 32
 
 // define number of self-adaptive compression to be 2
@@ -26,6 +28,22 @@ bool within_bounds(int h, int w, int H, int W) {
   return h >= 0 && h < H && w >= 0 && w < W;
 }
 
+
+/**
+ * @brief Optimized Max-Argmax-Avg Backward Kernel that is architecture independent 
+ *        with respect to Shared Memory Requirement 
+ * 
+ * @tparam scalar_t               datatype of the arrays (4 Byte float)
+ * @param img1_features_l0        image1 features at level 0 of shape (batch, h1, w1, fdim)
+ * @param img2_features_lk        image2 features at level k of shape (batch, h1/2**i, w1/2**i, fdim)
+ * @param argmax_output_u         argmax values of C_u at level k of shape (batch, h1, w1, 1, h1/2**k)
+ * @param argmax_output_v         for argmax values of C_v at level k of shape (batch, h1, w1, 1, w1/2**k)
+ * @param grad_MaxAvg_u           loss gradient w.r.t. Cu max and avg channels of shape (batch, h1, w1, 2, h1/2**k)
+ * @param grad_MaxAvg_v           loss gradient w.r.t. Cv max and avg channels of shape (batch, h1, w1, 2, w1/2**k)
+ * @param grad_img1_features_l0   output loss gradient w.r.t. fmap1_l0 of shape (batch, h1, w1, fdim)
+ * @param grad_img2_features_lk   output loss gradient w.r.t. fmap2_lk of shape (batch, h1/2**i, w1/2**i, fdim)
+ * @return __global__ 
+ */
 template <typename scalar_t>
 __global__ void max_argmax_avg_backward_kernel_optimized_arch_indep (
       const torch::PackedTensorAccessor32<scalar_t,4,torch::RestrictPtrTraits> img1_features_l0,
@@ -298,6 +316,12 @@ __global__ void max_argmax_avg_backward_kernel_optimized_arch_indep (
   }
 }
 
+
+/**
+ * @brief loss gradient wrt to the image one features 
+ * 
+ * does not work, ununsed
+ */
 template <typename scalar_t>
 __global__ void max_argmax_avg_fmap1_backward_kernel_optimized_arch_indep (
       const torch::PackedTensorAccessor32<scalar_t,4,torch::RestrictPtrTraits> img1_features_l0,
@@ -500,7 +524,11 @@ __global__ void max_argmax_avg_fmap1_backward_kernel_optimized_arch_indep (
   }
 }
 
-
+/**
+ * @brief kernel for the loss gradient wrt to the image 2 features at level l
+ * 
+ * does not work, ununsed
+ */
 template <typename scalar_t, int l, int div_l>
 __global__ void max_argmax_avg_fmap2_backward_kernel_optimized_arch_indep (
       const torch::PackedTensorAccessor32<scalar_t,4,torch::RestrictPtrTraits> img1_features_l0,
@@ -586,9 +614,6 @@ __global__ void max_argmax_avg_fmap2_backward_kernel_optimized_arch_indep (
   const bool withinBoundsHc0Wc0 = within_bounds(hc0, wc0, H1, W1);
   const bool withinBoundsUc0Vc0 = within_bounds(uc0, vc0, H2, W2);
  
-  // printf("u0: %i, v0: %i, uc0: %i, vc0: %i, thread_u: %i, thread_v: %i, sub_local_i: %i, sub_local_j: %i, limit_low_i: %i, limit_high_i: %i, limit_low_j: %i, limit_high_j: %i, sb_size_u: %i, sb_size_v: %i\n",
-  //   u0, v0, uc0, vc0, thread_u, thread_v, sub_local_i, sub_local_j, limit_low_i, limit_high_i, limit_low_j, limit_high_j, sub_block_size_u, sub_block_size_v);
-
   for(int j_block = 0; j_block < jBlockLimit; ++j_block){
 
     const int j_offset = j_block * BLOCK_W_DIV8;
@@ -603,9 +628,6 @@ __global__ void max_argmax_avg_fmap2_backward_kernel_optimized_arch_indep (
       auto argmax_output_v_ref = argmax_output_v[b][i_offset + threadIdx.x][j_offset + threadIdx.y][0];
       auto grad_MaxAvg_u_ref   = grad_MaxAvg_u  [b][i_offset + threadIdx.x][j_offset + threadIdx.y];
       auto grad_MaxAvg_v_ref   = grad_MaxAvg_v  [b][i_offset + threadIdx.x][j_offset + threadIdx.y];
-
-      // printf("uc0: %i, vc0: %i, thread_u: %i, thread_v: %i, i_block: %i, j_block: %i, i_offset: %i, j_offset: %i, loading_i: %i, loading_j: %i\n",
-      //   uc0, vc0, thread_u, thread_v, i_block, j_block, i_offset, j_offset, i_offset+threadIdx.x, j_offset+threadIdx.y);
 
       for(int v_inc = 0; v_inc < sub_blocks_num_v; ++v_inc){
         if(withinBoundsLoadingThread && v0+v_inc < W2){
@@ -702,8 +724,6 @@ __global__ void max_argmax_avg_fmap2_backward_kernel_optimized_arch_indep (
             
             const scalar_t grad_total = grad_cvmax + grad_cvavg + grad_cumax + grad_cuavg;
 
-            // printf("uc0: %i, vc0: %i, i: %i, j: %i, grad_total: %f\n", uc0, vc0, i_offset+i_inc, j_offset+j_inc, grad_total);
-
             // img1_features * (grad_cumax + grad_cuavg + grad_cvmax + grad_cvavg)
             for(int f_inc = 0; f_inc < FEATURE_SPLIT_SIZE; ++f_inc){
               // grad_fcache2_ptr[f_inc] += fcache1[i_inc][j_inc][f_inc] * grad_total;
@@ -727,10 +747,6 @@ __global__ void max_argmax_avg_fmap2_backward_kernel_optimized_arch_indep (
             for(int i_split = threadIdx.x; i_split < threadIdx.x+sub_block_size_u; ++i_split){
               for(int j_split = threadIdx.y; j_split < threadIdx.y+sub_block_size_v; ++j_split){
               
-                // if(grad_fcache2[i_split][j_split][f_inc] != 0.0) {
-                //   printf("uc0: %i, vc0: %i, i_block: %i, j_block: %i, f_block: %i, i_split: %i, j_split: %i, f_inc: %i, val: %f\n",
-                //     uc0, vc0, i_block, j_block, f_block, i_split, j_split, f_inc, grad_fcache2[i_split][j_split][f_inc]);
-                // }
                 temp_f_res += grad_fcache2[i_split][j_split][f_inc];
               }
             }
@@ -751,6 +767,21 @@ __global__ void max_argmax_avg_fmap2_backward_kernel_optimized_arch_indep (
   }
 }
 
+
+/**
+ * @brief computation of the loss gradient wrt image one and two
+ * 
+ * @tparam scalar_t               datatype for tensors (4 Byte float)
+ * @param img1_features_l0        image1 features at level 0 of shape (batch, h1, w1, fdim)
+ * @param img2_features_lk        image2 features at level k of shape (batch, h1/2**i, w1/2**i, fdim)
+ * @param argmax_output_u         argmax values of C_u at level k of shape (batch, h1, w1, 1, h1/2**k)
+ * @param argmax_output_v         for argmax values of C_v at level k of shape (batch, h1, w1, 1, w1/2**k)
+ * @param grad_MaxAvg_u           loss gradient w.r.t. Cu max and avg channels of shape (batch, h1, w1, 2, h1/2**k)
+ * @param grad_MaxAvg_v           loss gradient w.r.t. Cv max and avg channels of shape (batch, h1, w1, 2, w1/2**k)
+ * @param grad_img1_features_l0   output tensor for the loss gradient wrt to the image one features at level 0
+ * @param grad_img2_features_lk   output tensor for the loss gradient wrt to the image two features at level l
+ * @return __global__ 
+ */
 template <typename scalar_t>
 __global__ void max_argmax_avg_backward_kernel_unoptimized (
       const torch::PackedTensorAccessor32<scalar_t,4,torch::RestrictPtrTraits> img1_features_l0,
@@ -891,6 +922,20 @@ __global__ void max_argmax_avg_backward_kernel_unoptimized (
   }
 }
 
+
+/**
+ * @brief computation of the loss gradient wrt image one and two
+ *        this function starts the kernel
+ * 
+ * @param img1_features_l0        image1 features at level 0 of shape (batch, h1, w1, fdim)
+ * @param img2_features_lk        image2 features at level k of shape (batch, h1/2**i, w1/2**i, fdim)
+ * @param argmax_output_u         argmax values of C_u at level k of shape (batch, h1, w1, 1, h1/2**k)
+ * @param argmax_output_v         for argmax values of C_v at level k of shape (batch, h1, w1, 1, w1/2**k)
+ * @param grad_MaxAvg_u           loss gradient w.r.t. Cu max and avg channels of shape (batch, h1, w1, 2, h1/2**k)
+ * @param grad_MaxAvg_v           loss gradient w.r.t. Cv max and avg channels of shape (batch, h1, w1, 2, w1/2**k)
+ * @return std::vector<torch::Tensor> output of the loss gradient with respect to the image features 
+ *                                    of shape (batch, h1, w1, fdim) and (batch, h1/2**i, w1/2**i, fdim)
+ */
 std::vector<torch::Tensor> max_argmax_avg_cuda_backward_unoptimized (
         at::Tensor img1_features_l0, 
         at::Tensor img2_features_lk,
@@ -940,6 +985,19 @@ std::vector<torch::Tensor> max_argmax_avg_cuda_backward_unoptimized (
   return {grad_img1_features_l0, grad_img2_features_lk};
 }
 
+/**
+ * @brief optimized computation of the loss gradient wrt image one and two
+ *        this function starts the kernel
+ * 
+ * @param img1_features_l0        image1 features at level 0 of shape (batch, h1, w1, fdim)
+ * @param img2_features_lk        image2 features at level k of shape (batch, h1/2**i, w1/2**i, fdim)
+ * @param argmax_output_u         argmax values of C_u at level k of shape (batch, h1, w1, 1, h1/2**k)
+ * @param argmax_output_v         for argmax values of C_v at level k of shape (batch, h1, w1, 1, w1/2**k)
+ * @param grad_MaxAvg_u           loss gradient w.r.t. Cu max and avg channels of shape (batch, h1, w1, 2, h1/2**k)
+ * @param grad_MaxAvg_v           loss gradient w.r.t. Cv max and avg channels of shape (batch, h1, w1, 2, w1/2**k)
+ * @return std::vector<torch::Tensor> output of the loss gradient with respect to the image features 
+ *                                    of shape (batch, h1, w1, fdim) and (batch, h1/2**i, w1/2**i, fdim)
+ */
 std::vector<torch::Tensor> max_argmax_avg_cuda_backward_optimized (
         at::Tensor img1_features_l0, 
         at::Tensor img2_features_lk,
@@ -989,6 +1047,22 @@ std::vector<torch::Tensor> max_argmax_avg_cuda_backward_optimized (
   return {grad_img1_features_l0, grad_img2_features_lk};
 }
 
+/**
+ * @brief computation of the image gradients by starting two kernels:
+ *          - kernel for the gradients wrt image one
+ *          - kernel for the gradients wrt image two
+ * 
+ * does not work, would need further testing
+ * 
+ * @param img1_features_l0        image1 features at level 0 of shape (batch, h1, w1, fdim)
+ * @param img2_features_lk        image2 features at level k of shape (batch, h1/2**i, w1/2**i, fdim)
+ * @param argmax_output_u         argmax values of C_u at level k of shape (batch, h1, w1, 1, h1/2**k)
+ * @param argmax_output_v         for argmax values of C_v at level k of shape (batch, h1, w1, 1, w1/2**k)
+ * @param grad_MaxAvg_u           loss gradient w.r.t. Cu max and avg channels of shape (batch, h1, w1, 2, h1/2**k)
+ * @param grad_MaxAvg_v           loss gradient w.r.t. Cv max and avg channels of shape (batch, h1, w1, 2, w1/2**k)
+ * @return std::vector<torch::Tensor> output of the loss gradient with respect to the image features 
+ *                                    of shape (batch, h1, w1, fdim) and (batch, h1/2**i, w1/2**i, fdim)
+ */
 std::vector<torch::Tensor> max_argmax_avg_cuda_backward_optimized_separate (
         at::Tensor img1_features_l0, 
         at::Tensor img2_features_lk,
@@ -1108,6 +1182,19 @@ std::vector<torch::Tensor> max_argmax_avg_cuda_backward_optimized_separate (
   return {grad_img1_features_l0, grad_img2_features_lk};
 }
 
+
+/**
+ * @brief method that directs the call to the selected computation method
+ * 
+ * @param img1_features_l0        image1 features at level 0 of shape (batch, h1, w1, fdim)
+ * @param img2_features_lk        image2 features at level k of shape (batch, h1/2**i, w1/2**i, fdim)
+ * @param argmax_output_u         argmax values of C_u at level k of shape (batch, h1, w1, 1, h1/2**k)
+ * @param argmax_output_v         for argmax values of C_v at level k of shape (batch, h1, w1, 1, w1/2**k)
+ * @param grad_MaxAvg_u           loss gradient w.r.t. Cu max and avg channels of shape (batch, h1, w1, 2, h1/2**k)
+ * @param grad_MaxAvg_v           loss gradient w.r.t. Cv max and avg channels of shape (batch, h1, w1, 2, w1/2**k)
+ * @return std::vector<torch::Tensor> output of the loss gradient with respect to the image features 
+ *                                    of shape (batch, h1, w1, fdim) and (batch, h1/2**i, w1/2**i, fdim)
+ */
 std::vector<torch::Tensor> max_argmax_avg_cuda_backward (
         at::Tensor img1_features_l0, 
         at::Tensor img2_features_lk,
@@ -1130,11 +1217,5 @@ std::vector<torch::Tensor> max_argmax_avg_cuda_backward (
     argmax_output_v,
     grad_MaxAvg_u,
     grad_MaxAvg_v);
-  // return max_argmax_avg_cuda_backward_optimized_separate(
-  //   img1_features_l0,
-  //   img2_features_lk,
-  //   argmax_output_u,
-  //   argmax_output_v,
-  //   grad_MaxAvg_u,
-  //   grad_MaxAvg_v);
+
 }

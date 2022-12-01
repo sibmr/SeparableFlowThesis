@@ -1,14 +1,19 @@
-//#include <torch/torch.h>
 #include <torch/extension.h>
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <stdio.h>
 
+// definitions of constants
+
+// block dimension sizes
 #define BLOCK_H 4
 #define BLOCK_W 8
 #define BLOCK_HW BLOCK_H * BLOCK_W
+
 #define CHANNEL_STRIDE 32
 #define FEATURE_SIZE 256
+
+// size of the feature split (cache features dimension size)
 #define FEATURE_SPLIT_SIZE 32
 
 // define number of self-adaptive compression to be 2
@@ -21,15 +26,25 @@
 
 #define DIM3_INDEX(TENSOR, xx, yy, zz, ww) ((TENSOR)[((xx) * (TENSOR##_stride.x)) + ((yy) * (TENSOR##_stride.y)) + ((zz) * (TENSOR##_stride.z)) + ((ww) * (TENSOR##_stride.w))])
 
-// #ifdef __cplusplus
-//     extern "C" {
-// #endif
-
+/**
+ * @brief check if index (h,w) is within a 2D range of (0,0) to (H,W)
+ */
 __forceinline__ __device__
 bool within_bounds(int h, int w, int H, int W) {
   return h >= 0 && h < H && w >= 0 && w < W;
 }
 
+/**
+ * @brief Compute the maximum and average channels as first attempt to use shared memory
+ *        Unused
+ * 
+ * @tparam scalar_t           datatype of the tensors (4 Byte float)
+ * @param img1_features_l0    image one feature tensor at pyramid level 0
+ * @param img2_features_lk    image two feature tensor at pyramid level l 
+ * @param max_avg_output_u    output tensor for the maximum and average channels C_u^{max,avg} 
+ * @param max_avg_output_v    output tensor for the maximum and average channels C_v^{max,avg} 
+ * @return __global__ 
+ */
 template <typename scalar_t>
 __global__ void max_avg_forward_kernel (
   const torch::PackedTensorAccessor32<scalar_t,4,torch::RestrictPtrTraits> img1_features_l0,
@@ -190,8 +205,6 @@ __global__ void max_avg_forward_kernel_optimized_arch_indep (
     for (int u_block = 0; u_block < uBlockLimit; ++u_block){
 
       const int u_offset = u_block * BLOCK_H;
-
-      // printf("%i %i   %i %i\n", hc0, wc0, u_block, v_block);
 
       // reset correlation volume at the start of the uv-block (each thread resets one part)
       for (int i = 0; i < BLOCK_H; ++i){
@@ -402,8 +415,6 @@ __global__ void max_argmax_avg_forward_kernel_optimized_arch_indep (
     for (int u_block = 0; u_block < uBlockLimit; ++u_block){
 
       const int u_offset = u_block * BLOCK_H;
-
-      // printf("%i %i   %i %i\n", hc0, wc0, u_block, v_block);
 
       // reset correlation volume at the start of the uv-block (each thread resets one part)
       for (int i = 0; i < BLOCK_H; ++i){
@@ -627,8 +638,6 @@ __global__ void compression_forward_kernel_optimized_arch_indep (
 
       const int u_offset = u_block * BLOCK_H;
 
-      // printf("%i %i   %i %i\n", hc0, wc0, u_block, v_block);
-
       // reset correlation volume at the start of the uv-block (each thread resets one part)
       for (int i = 0; i < BLOCK_H; ++i){
         for (int j = 0; j < BLOCK_W; ++j){
@@ -743,6 +752,17 @@ __global__ void compression_forward_kernel_optimized_arch_indep (
   }
 }
 
+
+/**
+ * @brief kernel for computing the maximum and average channels 
+ * 
+ * @tparam scalar_t         datatype of the tensors (4 Byte float)
+ * @param img1_features_l0  image one features at pyramid level 0
+ * @param img2_features_lk  image two features at pyramid level l
+ * @param max_avg_output_u  output tensor of the maximum and average channels C_u^{max,avg}
+ * @param max_avg_output_v  output tensor of the maximum and average channels C_v^{max,avg} 
+ * @return __global__ 
+ */
 template <typename scalar_t>
 __global__ void max_avg_forward_kernel_unoptimized (
   const torch::PackedTensorAccessor32<scalar_t,4,torch::RestrictPtrTraits> img1_features_l0,
@@ -798,6 +818,19 @@ __global__ void max_avg_forward_kernel_unoptimized (
 
 }
 
+
+/**
+ * @brief kernel for computing the attention-based channels
+ * 
+ * @tparam scalar_t 
+ * @param img1_features_l0      image one features tensor at pyramid level 0
+ * @param img2_features_lk      image two features tensor at pyramid level l
+ * @param attention_weights_u   attention weights tensor for Cu
+ * @param attention_weights_v   attention weights tensor for Cv
+ * @param compression_output_u  output tensor of attention-based channels C_u^{k+2}
+ * @param compression_output_v  output tensor of attention-based channels C_v^{k+2}
+ * @return __global__ 
+ */
 template <typename scalar_t>
 __global__ void compression_forward_kernel_unoptimized (
       const torch::PackedTensorAccessor32<scalar_t,4,torch::RestrictPtrTraits> img1_features_l0,
@@ -856,55 +889,15 @@ __global__ void compression_forward_kernel_unoptimized (
 }
 
 
-
-template <typename scalar_t>
-__global__ void testkernel (
-  const torch::PackedTensorAccessor32<scalar_t,4,torch::RestrictPtrTraits> img1_features_l0,
-  const torch::PackedTensorAccessor32<scalar_t,4,torch::RestrictPtrTraits> img2_features_lk,
-  torch::PackedTensorAccessor32<scalar_t,5,torch::RestrictPtrTraits> max_avg_output_u,
-  torch::PackedTensorAccessor32<scalar_t,5,torch::RestrictPtrTraits> max_avg_output_v)
-{
-
-  const int B = img1_features_l0.size(0); // batch size
-  const int H1 = img1_features_l0.size(1); // ht of img1
-  const int W1 = img1_features_l0.size(2); // wd of img1
-  const int H2 = img2_features_lk.size(1); // ht of current lvl: ht/2**i
-  const int W2 = img2_features_lk.size(2); // wd of current lvl: wd/2**i
-  const int C = img1_features_l0.size(3); // image feature dimension
-
-  const int b = blockIdx.x; // current batch
-
-  // global starting x/y value for this block
-  const int h0 = blockIdx.y * blockDim.x;   // block_i * BLOCK_H
-  const int w0 = blockIdx.z * blockDim.y;   // block_j * BLOCK_W
-
-  // global current x/y value for this block
-  const int hc0 = h0 + threadIdx.x;
-  const int wc0 = w0 + threadIdx.y;
-  
-  auto g1_ref = img1_features_l0[b][hc0][wc0];
-
-  for (int v = 0; v<W2; v+=1){
-    auto max_u_ref = max_avg_output_u[b][hc0][wc0][0];
-    auto avg_u_ref = max_avg_output_u[b][hc0][wc0][1];
-    auto max_v_ref = max_avg_output_v[b][hc0][wc0][0];
-    auto avg_v_ref = max_avg_output_v[b][hc0][wc0][1];
-    
-    for(int u = 0; u<H2; u+=1){
-
-      auto g2_ref = img2_features_lk[b][u][v];
-
-      max_u_ref [u] = max(max_u_ref [u], (1+b)*10000.0 + (1+hc0)*1000.0 + (1+wc0)*100.0 + (1+u)*10.0 + (1+v)*1.0);
-      avg_u_ref [u] += 1;
-
-      max_v_ref [v] = max(max_u_ref [v], (1+b)*10000.0 + (1+hc0)*1000.0 + (1+wc0)*100.0 + (1+u)*10.0 + (1+v)*1.0);
-      avg_v_ref [v] += 1;
-
-    }
-  }
-
-}
-
+/**
+ * @brief Responsible for starting the kernel for the maximum and average channels
+ *        Allocates storage for the output tensor
+ * 
+ * @param img1_features_l0  image one input tensor
+ * @param img2_features_lk  image two input tensor
+ * @return std::vector<torch::Tensor>     vector containing two tensors with maximum and average 
+ *                                        correlation volume channels C_u^{max,avg} and C_v^{max,avg}
+ */
 std::vector<torch::Tensor> max_avg_cuda_forward (
         at::Tensor img1_features_l0, 
         at::Tensor img2_features_lk){
@@ -941,16 +934,7 @@ std::vector<torch::Tensor> max_avg_cuda_forward (
   // shape: (4,8)
   const dim3 threads(BLOCK_H, BLOCK_W);
   
-  // AT_DISPATCH_FLOATING_TYPES(img1_features_l0.type(), "max_avg_cuda_forward", ([&] {
-  //   max_avg_forward_kernel <scalar_t> <<< blocks, threads >>> (
-  //     img1_features_l0.packed_accessor32<scalar_t,4,torch::RestrictPtrTraits>(),
-  //     img2_features_lk.packed_accessor32<scalar_t,4,torch::RestrictPtrTraits>(),
-  //     max_avg_output_u.packed_accessor32<scalar_t,5,torch::RestrictPtrTraits>(),
-  //     max_avg_output_v.packed_accessor32<scalar_t,5,torch::RestrictPtrTraits>()
-  //   );
-  // }));
-
-  
+  // starts the optimized maximum and average kernel
   max_avg_forward_kernel_optimized_arch_indep <float> <<< blocks, threads >>> (
     img1_features_l0.packed_accessor32<float,4,torch::RestrictPtrTraits>(),
     img2_features_lk.packed_accessor32<float,4,torch::RestrictPtrTraits>(),
@@ -964,6 +948,17 @@ std::vector<torch::Tensor> max_avg_cuda_forward (
   return {max_avg_output_u, max_avg_output_v};
 }
 
+/**
+ * @brief Responsible for starting the kernel for the maximum and average channels,
+ *        including the argmax, i.e. the index of each maximum
+ *        Allocates storage for the output tensor
+ * 
+ * @param img1_features_l0  image one input tensor
+ * @param img2_features_lk  image two input tensor
+ * @return std::vector<torch::Tensor>     vector containing two tensors with maximum and average 
+ *                                        correlation volume channels C_u^{max,avg} and C_v^{max,avg}
+ *                                        as well as C_u^{argmax} and C_v^{argmax}
+ */
 std::vector<torch::Tensor> max_argmax_avg_cuda_forward (
         at::Tensor img1_features_l0, 
         at::Tensor img2_features_lk){
@@ -1004,16 +999,7 @@ std::vector<torch::Tensor> max_argmax_avg_cuda_forward (
   // shape: (4,8)
   const dim3 threads(BLOCK_H, BLOCK_W);
   
-  // AT_DISPATCH_FLOATING_TYPES(img1_features_l0.type(), "max_avg_cuda_forward", ([&] {
-  //   max_avg_forward_kernel <scalar_t> <<< blocks, threads >>> (
-  //     img1_features_l0.packed_accessor32<scalar_t,4,torch::RestrictPtrTraits>(),
-  //     img2_features_lk.packed_accessor32<scalar_t,4,torch::RestrictPtrTraits>(),
-  //     max_avg_output_u.packed_accessor32<scalar_t,5,torch::RestrictPtrTraits>(),
-  //     max_avg_output_v.packed_accessor32<scalar_t,5,torch::RestrictPtrTraits>()
-  //   );
-  // }));
-
-  
+  // starts the optimized maximum and average kernel with argmax
   max_argmax_avg_forward_kernel_optimized_arch_indep <float> <<< blocks, threads >>> (
     img1_features_l0.packed_accessor32<float,4,torch::RestrictPtrTraits>(),
     img2_features_lk.packed_accessor32<float,4,torch::RestrictPtrTraits>(),
@@ -1029,6 +1015,17 @@ std::vector<torch::Tensor> max_argmax_avg_cuda_forward (
   return {max_avg_output_u, max_avg_output_v, argmax_output_u, argmax_output_v};
 }
 
+/**
+ * @brief Responsible for starting the kernel to compute the attention-based compression channels
+ *        Allocates memory for the kernel output
+ * 
+ * @param img1_features_l0      image one input tensor 
+ * @param img2_features_lk      image two input tensor 
+ * @param attention_weights_u   Cu attention weights input tensor
+ * @param attention_weights_v   Cv attention weights input tensor 
+ * @return std::vector<torch::Tensor>     vector containing two tensors with the attention-based
+ *                                        correlation volume channels C_u^{k+2} and C_v^{k+2}
+ */
 std::vector<torch::Tensor> compression_cuda_forward (
         at::Tensor img1_features_l0, 
         at::Tensor img2_features_lk,
@@ -1059,20 +1056,8 @@ std::vector<torch::Tensor> compression_cuda_forward (
   const dim3 threads(BLOCK_H, BLOCK_W);
 
   cudaDeviceSetLimit(cudaLimitMallocHeapSize, 128*1024*1024);
-
-  // AT_DISPATCH_FLOATING_TYPES(img1_features_l0.type(), "compression_cuda_forward", ([&] {
-  //   compression_forward_kernel_unoptimized <scalar_t> <<< blocks, threads >>> (
-  //     img1_features_l0.packed_accessor32<scalar_t,4,torch::RestrictPtrTraits>(),
-  //     img2_features_lk.packed_accessor32<scalar_t,4,torch::RestrictPtrTraits>(),
-  //     attention_weights_u.packed_accessor32<scalar_t,5,torch::RestrictPtrTraits>(),
-  //     attention_weights_v.packed_accessor32<scalar_t,5,torch::RestrictPtrTraits>(),
-  //     compression_output_u.packed_accessor32<scalar_t,5,torch::RestrictPtrTraits>(),
-  //     compression_output_v.packed_accessor32<scalar_t,5,torch::RestrictPtrTraits>()
-  //   );
-  // }));
-
-  
-  // compression_forward_kernel_unoptimized <float> <<< blocks, threads >>> (
+    
+  // starts the optimized attention-based compression kernel
   compression_forward_kernel_optimized_arch_indep <float, K_VAL> <<< blocks, threads >>> (
     img1_features_l0.packed_accessor32<float,4,torch::RestrictPtrTraits>(),
     img2_features_lk.packed_accessor32<float,4,torch::RestrictPtrTraits>(),
@@ -1087,10 +1072,3 @@ std::vector<torch::Tensor> compression_cuda_forward (
   
   return {compression_output_u, compression_output_v};
 }
-
-
-
-
-// #ifdef __cplusplus
-//     }
-// #endif

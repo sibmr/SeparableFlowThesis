@@ -1,4 +1,3 @@
-//#include <torch/torch.h>
 #include <torch/extension.h>
 #include <cuda.h>
 #include <cuda_runtime.h>
@@ -6,6 +5,7 @@
 #include <stdexcept>
 #include <string>
 
+// block dimension size constants
 #define BLOCK_H 4
 #define BLOCK_W 8
 #define BLOCK_HW BLOCK_H * BLOCK_W
@@ -16,6 +16,8 @@
 
 #define CHANNEL_STRIDE 32
 #define FEATURE_SIZE 256
+
+// size of the feature split (cache features dimension size)
 #define FEATURE_SPLIT_SIZE 32
 
 // define number of self-adaptive compression to be 2
@@ -27,23 +29,10 @@ bool within_bounds(int h, int w, int H, int W) {
 }
 
 /**
- * @brief More time-efficient implementation of the self-adaptive compresseion backpropagation
+ * @brief More time-efficient implementation of the self-adaptive compression backpropagation
  *  
- * TODO: Produces wrong results, needs debugging
+ * does not work, ununsed
  * 
- * @tparam scalar_t 
- * @tparam CONST_K 
- * @param img1_features_l0 
- * @param img2_features_lk 
- * @param attention_weights_u 
- * @param attention_weights_v 
- * @param grad_compressed_output_u 
- * @param grad_compressed_output_v 
- * @param grad_img1_features_l0 
- * @param grad_img2_features_lk 
- * @param grad_attention_u 
- * @param grad_attention_v 
- * @return __global__ 
  */
 template <typename scalar_t, int CONST_K>
 __global__ void compression_backward_kernel_optimized_arch_indep (
@@ -584,7 +573,11 @@ std::vector<torch::Tensor> compression_cuda_backward_unoptimized (
   return {grad_img1_features_l0, grad_img2_features_lk, grad_attention_u, grad_attention_v};
 }
 
-
+/**
+ * @brief Kernel-start function for the optimized self-adaptive compression backward pass
+ * 
+ * does not work, ununsed
+ */
 std::vector<torch::Tensor> compression_cuda_backward_optimized (
         at::Tensor img1_features_l0, 
         at::Tensor img2_features_lk,
