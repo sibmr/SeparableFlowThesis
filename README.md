@@ -1,6 +1,6 @@
 # Optical Flow Estimation with Separable Cost Volume
 
-Expansion of the 
+Extension of the 
 [implementation](https://github.com/feihuzhang/SeparableFlow)
 accompanying 
 [Separable Flow: Learning Motion Cost Volumes for Optical Flow Estimation](https://openaccess.thecvf.com/content/ICCV2021/papers/Zhang_Separable_Flow_Learning_Motion_Cost_Volumes_for_Optical_Flow_Estimation_ICCV_2021_paper.pdf)
@@ -57,13 +57,27 @@ Step 4: revise parameter settings and run "train.sh" and "evaluate.sh" for train
 Training configurations and corresponding model checkpoints.
 
 <ins>core</ins>  
-Python files for the separable flow and gma implementation.
+Python files for the Separable Flow and GMA implementation.
 
 <ins>libs/MemorySaver</ins>  
 Alternative correlation volume separation implementation.
 
 <ins>scripts</ins>  
 Python programs and shell scripts for evaluation and testing.
+
+<ins>train.py</ins>  
+Python program executed to train the model.
+The training settings are controlled via command line parameters.
+
+<ins>evaluate.py</ins>  
+Python program executed to evaluate the model.
+The evaluation settings are controlled via command line parameters.
+
+<ins>chairs_split.txt</ins>  
+Determines which samples are used for training and which ones are used for validation or testing.
+
+<ins>train.sh</ins> and <ins>evaluate.sh</ins>  
+Original Separable Flow training and evaluation shell scripts.
 
 ## Notable Command Line Arguments for Training and Inference
 

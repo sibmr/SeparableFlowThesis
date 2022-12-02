@@ -304,9 +304,6 @@ def main():
     # probably all processes run on the same node, since dist_url = localhost
     else:
         
-        # use multiprocessing
-        # assert False, "part of multiprocessing executed"
-
         args.sync_bn = True
         args.distributed = True
         args.multiprocessing_distributed = True
@@ -376,9 +373,6 @@ def main_worker(gpu, ngpus_per_node, argss):
     # register current process with process group
     if args.distributed:
         
-        # use multiprocessing
-        # assert False, "part of multiprocessing executed"
-        
         if args.dist_url == "env://" and args.rank == -1:
             args.rank = int(os.environ["RANK"])
         if args.multiprocessing_distributed:
@@ -395,9 +389,6 @@ def main_worker(gpu, ngpus_per_node, argss):
     
     # if there are multiple gpus, DistributedDataParallel is usually faster for any number of nodes
     if args.distributed:
-
-        # use multiprocessing
-        # assert False, "part of multiprocessing executed"
 
         torch.cuda.set_device(gpu)
         args.batchSize = int(args.batchSize / args.ngpus_per_node)
@@ -632,13 +623,6 @@ def train(training_data_loader, model, optimizer, scheduler, stats_logger, epoch
             # calculate loss
             loss, metrics = sequence_loss(flow_predictions, target, valid)
 
-            # logger.info(f"GPU:{args.rank}, valid_iteration:{valid_iteration}\n"
-            # + f"input1.shape:{input1.shape}, input2.shape:{input2.shape}\n"
-            # + f"optimizer_group_lr:{[group['lr'] for group in optimizer.param_groups]}\n"
-            # + f"scheduler_group_lr:{scheduler.get_last_lr()}\n"
-            # + f"loss:{loss}\n"
-            # + f"metrics:{metrics}")
-
             # backpropagation of loss gradient
             loss.backward()
 
@@ -763,9 +747,6 @@ def val(testing_data_loader, model, split='sintel', iters=24, validation_title="
             # not executed
             # calculates the epoch metrics, no metrics are calculated if not multiprocessing
             if args.multiprocessing_distributed:
-                
-                # use multiprocessing
-                # assert False, "part of multiprocessing executed"
                 
                 # add 1-tensor for worker counting
                 count = target.new_tensor([1], dtype=torch.long)
