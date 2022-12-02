@@ -258,13 +258,13 @@ class BasicUpdateBlock(nn.Module):
         else:
             self.encoder = BasicMotionEncoder(args)
         
-        # recurrent input dimension without gma
         self.gma_aggregator_net = None
+        # recurrent input dimension without gma
         gru_input_dim = 128+hidden_dim
-        # recurrent input dimension with gma
         if self.args.use_gma:
             # aggregation network for motion features of gma
             self.gma_aggregator_net = Aggregate(args=self.args, dim=128, dim_head=128, heads=self.args.num_heads)
+            # recurrent input dimension with gma
             gru_input_dim = 128+hidden_dim+hidden_dim
 
         # takes context features from image1 and encoded motion features and updates hidden state

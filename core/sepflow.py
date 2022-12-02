@@ -42,7 +42,6 @@ class SepFlow(nn.Module):
             self.args.alternate_corr_backward = False
         
         # feature network, context network, and update block
-
         self.fnet = BasicEncoder(output_dim=256, norm_fn='instance', dropout=args.dropout)        
         self.cnet = BasicEncoder(output_dim=hdim+cdim, norm_fn='batch', dropout=args.dropout)
         self.update_block = BasicUpdateBlock(self.args, hidden_dim=hdim)
@@ -50,10 +49,12 @@ class SepFlow(nn.Module):
         self.cost_agg1 = CostAggregation(in_channel=args.num_corr_channels*args.corr_levels)
         self.cost_agg2 = CostAggregation(in_channel=args.num_corr_channels*args.corr_levels)
 
+        # if gma is used, create the gma attention network
         self.gma_attention_net = None
         if args.use_gma:
             self.gma_attention_net = Attention(args=self.args, dim=cdim, heads=self.args.num_heads, max_pos_size=160, dim_head=cdim)
     
+        # if there are more than two correlation channels, create networks for attention weights with K-2 channels
         if args.num_corr_channels > 2:
             self.attention1 = torch.nn.Conv3d(2, args.num_corr_channels-2, 3, padding=1)
             self.attention2 = torch.nn.Conv3d(2, args.num_corr_channels-2, 3, padding=1)
@@ -74,10 +75,7 @@ class SepFlow(nn.Module):
                 m.eval()
             if isinstance(m, nn.BatchNorm3d):
                 count3 += 1
-                #print(m)
                 m.eval()
-        #print(count1, count2, count3)
-                #print(m)
 
     def initialize_flow(self, img):
         """ Flow is represented as difference between two coordinate grids flow = coords1 - coords0"""
@@ -175,8 +173,11 @@ class SepFlow(nn.Module):
             flow_predictions.append(flow_init)
             
         else:
+            # cost aggregation reduces corr1 and corr2 from (batch, K, ht, wd) to (batch, 1, ht, wd)
             flow_u, corr1 = self.cost_agg1(corr1, guid_u, max_shift=384, is_ux=True)
             flow_v, corr2 = self.cost_agg2(corr2, guid_v, max_shift=384, is_ux=False)
+
+            # concatentate motion-regressed flow
             flow_init = torch.cat((flow_u, flow_v), dim=1)
         
         # downsample inital flow

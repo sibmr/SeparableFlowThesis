@@ -9,7 +9,8 @@ class Guidance(nn.Module):
             channels (int, optional):   Largest channel number used by the initial hourglass network.
                                         Defaults to 32.
             no_4dcorr_aggregation (bool, optional): Whether to compute weights for 4d correlation volume aggregation. 
-                                                    Defaults to False.
+                                                    Defaults to False, by default 4D correlation aggregation weights are
+                                                    computed.
         """
         super(Guidance, self).__init__()
         
