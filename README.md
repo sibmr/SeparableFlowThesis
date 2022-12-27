@@ -19,7 +19,6 @@ channels can be controlled via the command line.
 
     gcc: >=5.3 and gcc != 10.3 (segfault in chrono during template resolution)
     gcc: 9.4.0 and 10.2 seem to work
-    GPU mem: >=5G (for testing);  >=11G (for training)
     pytorch: >=1.6
     pytorch: python3.9 with pytorch 11.0 and cuda 11.3 works
     cuda: >=9.2 (9.0 doesn’t support well for the new pytorch version and may have “pybind11 errors”.)
@@ -27,6 +26,7 @@ channels can be controlled via the command line.
     tested platform/settings:
       1) ubuntu 18.04 + cuda 11.0 + python 3.6, 3.7
       2) centos + cuda 11 + python 3.7
+      3) fedora 34 (workstation edition) + system-cuda 11.3 + system-gcc 9.4 + python 3.9.12 + pytorch 11.0
       
 
 ## Environment:
